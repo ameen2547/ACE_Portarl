@@ -2191,16 +2191,13 @@ function getUserMappingData(userName, userType, sessionToken, ipAddress, history
       if (cleanType === 'VJ' && cleanStr_(historyRow[4]).toLowerCase() !== cleanUser) continue;
       matchingHistoryRows.push({ row: historyRow, index: h });
     }
-    matchingHistoryRows.sort(function(a, b) {
-      var aDate = cleanStr_(a.row[0]), bDate = cleanStr_(b.row[0]);
-      if (aDate !== bDate) return aDate < bDate ? 1 : -1;
-      return cleanStr_(a.row[5]).localeCompare(cleanStr_(b.row[5])) ||
-        cleanStr_(a.row[4]).localeCompare(cleanStr_(b.row[4])) ||
-        cleanStr_(a.row[2]).localeCompare(cleanStr_(b.row[2]));
-    });
     var safeHistoryOffset = Math.max(0, Math.floor(Number(historyOffset) || 0));
     var historyPageSize = 100;
-    var historyPage = matchingHistoryRows.slice(safeHistoryOffset, safeHistoryOffset + historyPageSize);
+    // Snapshot rows are appended by date. Read the newest page from the end of
+    // the sheet instead of sorting the full archive on every mobile request.
+    var historyEnd = Math.max(0, matchingHistoryRows.length - safeHistoryOffset);
+    var historyStart = Math.max(0, historyEnd - historyPageSize);
+    var historyPage = matchingHistoryRows.slice(historyStart, historyEnd).reverse();
     historyPage.forEach(function(entry) {
       historyList.push(makeItem(entry.row, entry.index, true));
     });
@@ -2212,7 +2209,7 @@ function getUserMappingData(userName, userType, sessionToken, ipAddress, history
       historyList: historyList,
       historyOffset: safeHistoryOffset,
       historyNextOffset: safeHistoryOffset + historyList.length,
-      historyHasMore: safeHistoryOffset + historyList.length < matchingHistoryRows.length,
+      historyHasMore: historyStart > 0,
       historyTotalCount: matchingHistoryRows.length,
       totalCount: list.length,
       todayUpdatedCount: todayUpdatedCount,
