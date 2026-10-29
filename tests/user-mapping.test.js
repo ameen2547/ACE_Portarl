@@ -142,3 +142,15 @@ test('frontend includes transient retry, bridge guard, and history continuation 
   assert.ok(frontendSource.includes("loadOlderUserMapHistory('VJ')"));
   assert.ok(frontendSource.includes("loadOlderUserMapHistory('ADMIN')"));
 });
+
+test('inline frontend JavaScript parses without syntax errors', () => {
+  const scriptTag = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  let match;
+  let parsedCount = 0;
+  while ((match = scriptTag.exec(frontendSource))) {
+    if (/\bsrc\s*=/.test(match[1]) || !match[2].trim()) continue;
+    parsedCount++;
+    assert.doesNotThrow(() => new vm.Script(match[2], { filename: 'index-inline-' + parsedCount + '.js' }));
+  }
+  assert.ok(parsedCount > 0, 'expected at least one inline application script');
+});
