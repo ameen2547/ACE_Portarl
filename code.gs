@@ -1884,12 +1884,14 @@ function userMappingHistoryRow_(snapshotDate, row) {
 
 // Archive every current mapping once per day. Subsequent edits update that day's snapshot,
 // while earlier dates remain immutable and A:J in User_Mapping remain unchanged.
-function archiveUserMappingDailySnapshot_(spreadsheet, liveRows) {
+function archiveUserMappingDailySnapshot_(spreadsheet, liveRows, historyData) {
   var lock = LockService.getScriptLock();
-  lock.waitLock(10000);
+  // Snapshotting is only a first-load fallback; do not make every reader wait
+  // behind a script-wide lock when another user is opening the same page.
+  if (!lock.tryLock(1000)) return null;
   try {
     var history = getOrCreateUserMappingHistorySheet_(spreadsheet);
-    var historyData = history.getDataRange().getValues();
+    historyData = historyData || history.getDataRange().getValues();
     var snapshotDate = userMappingSnapshotDate_();
     var existing = Object.create(null);
     for (var i = 1; i < historyData.length; i++) {
@@ -1906,7 +1908,9 @@ function archiveUserMappingDailySnapshot_(spreadsheet, liveRows) {
     }
     if (newRows.length) {
       history.getRange(history.getLastRow() + 1, 1, newRows.length, USER_MAPPING_HISTORY_HEADERS.length).setValues(newRows);
+      historyData = historyData.concat(newRows);
     }
+    return historyData;
   } finally {
     lock.releaseLock();
   }
@@ -2090,7 +2094,7 @@ function getUserMappingAvatarData(avatarIds, userName, userType, sessionToken, i
   }
 }
 
-function getUserMappingData(userName, userType, sessionToken, ipAddress) {
+function getUserMappingData(userName, userType, sessionToken, ipAddress, historyOffset) {
   try {
     var auth = requireSession_(sessionToken, null, ipAddress);
     if (!auth.success) return { success: false, message: auth.message, list: [], historyList: [] };
@@ -2100,10 +2104,20 @@ function getUserMappingData(userName, userType, sessionToken, ipAddress) {
     var sheet = getOrCreateUserMappingSheet_(database);
     var data = sheet.getDataRange().getValues();
     if (!data || !data.length) data = [[]];
-    if (data.length > 1) archiveUserMappingDailySnapshot_(database, data);
     var historySheet = getOrCreateUserMappingHistorySheet_(database);
     var historyData = historySheet.getDataRange().getValues();
     var todayStr = userMappingSnapshotDate_();
+    // The daily archive is already maintained by writes and the time trigger.
+    // Only perform the full-sheet fallback once per day (or after cache expiry).
+    var archiveCache = CacheService.getScriptCache();
+    var archiveCacheKey = 'ACE_USER_MAPPING_ARCHIVED_' + todayStr;
+    if (data.length > 1 && !archiveCache.get(archiveCacheKey)) {
+      var archivedData = archiveUserMappingDailySnapshot_(database, data, historyData);
+      if (archivedData) {
+        historyData = archivedData;
+        archiveCache.put(archiveCacheKey, '1', 21600);
+      }
+    }
     var activeSs = SpreadsheetApp.getActiveSpreadsheet();
     var vjSheet = activeSs.getSheetByName('vj mc all') || activeSs.getSheetByName('VJ MC ALL') || activeSs.getSheetByName('vj_mc_all');
     var vjProfileMap = Object.create(null);
@@ -2161,20 +2175,49 @@ function getUserMappingData(userName, userType, sessionToken, ipAddress) {
 
     var list = [], historyList = [], todayUpdatedCount = 0;
     for (var i = 1; i < data.length; i++) {
-      var item = makeItem(data[i], i, false);
+      var liveRow = data[i];
+      // Filter VJ rows before avatar/date formatting work. This is especially
+      // important for mobile requests where the sheet may contain many VJs.
+      if (cleanType === 'VJ' && cleanStr_(liveRow[3]).toLowerCase() !== cleanUser) continue;
+      var item = makeItem(liveRow, i, false);
       if (!item.tiktokId && !item.userName && !item.assignedVJ) continue;
-      if (cleanType !== 'VJ' || item.assignedVJ.toLowerCase() === cleanUser) {
-        list.push(item);
-        if (item.isUpdatedToday) todayUpdatedCount++;
-      }
+      list.push(item);
+      if (item.isUpdatedToday) todayUpdatedCount++;
     }
+    var matchingHistoryRows = [];
     for (var h = 1; h < historyData.length; h++) {
-      var hist = makeItem(historyData[h], h, true);
-      if (!hist.tiktokId && !hist.userName && !hist.assignedVJ) continue;
-      if (cleanType !== 'VJ' || hist.assignedVJ.toLowerCase() === cleanUser) historyList.push(hist);
+      var historyRow = historyData[h];
+      if (!cleanStr_(historyRow[1]) && !cleanStr_(historyRow[2]) && !cleanStr_(historyRow[4])) continue;
+      if (cleanType === 'VJ' && cleanStr_(historyRow[4]).toLowerCase() !== cleanUser) continue;
+      matchingHistoryRows.push({ row: historyRow, index: h });
     }
+    matchingHistoryRows.sort(function(a, b) {
+      var aDate = cleanStr_(a.row[0]), bDate = cleanStr_(b.row[0]);
+      if (aDate !== bDate) return aDate < bDate ? 1 : -1;
+      return cleanStr_(a.row[5]).localeCompare(cleanStr_(b.row[5])) ||
+        cleanStr_(a.row[4]).localeCompare(cleanStr_(b.row[4])) ||
+        cleanStr_(a.row[2]).localeCompare(cleanStr_(b.row[2]));
+    });
+    var safeHistoryOffset = Math.max(0, Math.floor(Number(historyOffset) || 0));
+    var historyPageSize = 100;
+    var historyPage = matchingHistoryRows.slice(safeHistoryOffset, safeHistoryOffset + historyPageSize);
+    historyPage.forEach(function(entry) {
+      historyList.push(makeItem(entry.row, entry.index, true));
+    });
     historyList.sort(function(a,b) { return a.snapshotDate === b.snapshotDate ? a.team.localeCompare(b.team) || a.assignedVJ.localeCompare(b.assignedVJ) || a.userName.localeCompare(b.userName) : (a.snapshotDate < b.snapshotDate ? 1 : -1); });
-    return { success: true, userType: cleanType, list: list, historyList: historyList, totalCount: list.length, todayUpdatedCount: todayUpdatedCount, todayStr: todayStr };
+    return {
+      success: true,
+      userType: cleanType,
+      list: list,
+      historyList: historyList,
+      historyOffset: safeHistoryOffset,
+      historyNextOffset: safeHistoryOffset + historyList.length,
+      historyHasMore: safeHistoryOffset + historyList.length < matchingHistoryRows.length,
+      historyTotalCount: matchingHistoryRows.length,
+      totalCount: list.length,
+      todayUpdatedCount: todayUpdatedCount,
+      todayStr: todayStr
+    };
   } catch (err) {
     return { success: false, message: 'เกิดข้อผิดพลาดในระบบ User Mapping: ' + err.toString(), list: [], historyList: [] };
   }
