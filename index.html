@@ -1808,9 +1808,23 @@
       var previous = null;
       try { previous = JSON.parse(sessionStorage.getItem('ace_session') || 'null'); } catch (e) {}
       var token = (previous && previous.token) || currentSessionToken || currentAdminToken;
-      localStorage.removeItem('ace_session');
-      sessionStorage.removeItem('ace_session');
-      if (token && typeof google !== 'undefined' && google.script && google.script.run) google.script.run.endSession(token);
+
+      // Always clear browser-side credentials first, even if the deployed server is
+      // missing the optional revocation endpoint or the network call fails.
+      try { localStorage.removeItem('ace_session'); } catch (e) {}
+      try { sessionStorage.removeItem('ace_session'); } catch (e) {}
+
+      if (token && typeof google !== 'undefined' && google.script && google.script.run) {
+        var runner = google.script.run;
+        if (typeof runner.endSession === 'function') {
+          runner.withFailureHandler(function(error) {
+            console.warn('Server session revocation failed; the session will expire automatically.', error);
+          }).endSession(token);
+        } else {
+          console.warn('The active Apps Script deployment does not expose endSession; the server session will expire automatically.');
+        }
+      }
+
       currentSessionToken = '';
       currentAdminToken = '';
     }
