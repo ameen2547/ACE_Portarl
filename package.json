@@ -3,6 +3,7 @@
   "private": true,
   "description": "ACE Content Portal Google Apps Script deployment helpers",
   "scripts": {
+    "test": "node --test tests/*.test.js",
     "gas:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/setup-gas.ps1",
     "gas:push:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/upload-dev.ps1",
     "gas:release:prod": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/release-prod.ps1"

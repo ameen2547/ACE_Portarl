@@ -1920,7 +1920,10 @@ function archiveUserMappingDailySnapshotJob_() {
   var database = getUserMappingDatabase_();
   var sheet = getOrCreateUserMappingSheet_(database);
   var data = sheet.getDataRange().getValues();
-  if (data.length > 1) archiveUserMappingDailySnapshot_(database, data);
+  if (data.length > 1) {
+    var archivedData = archiveUserMappingDailySnapshot_(database, data);
+    if (archivedData) PropertiesService.getScriptProperties().setProperty('ACE_USER_MAPPING_ARCHIVED_DATE', userMappingSnapshotDate_());
+  }
 }
 
 function installUserMappingDailyArchiveTrigger_() {
@@ -2107,15 +2110,14 @@ function getUserMappingData(userName, userType, sessionToken, ipAddress, history
     var historySheet = getOrCreateUserMappingHistorySheet_(database);
     var historyData = historySheet.getDataRange().getValues();
     var todayStr = userMappingSnapshotDate_();
-    // The daily archive is already maintained by writes and the time trigger.
-    // Only perform the full-sheet fallback once per day (or after cache expiry).
-    var archiveCache = CacheService.getScriptCache();
-    var archiveCacheKey = 'ACE_USER_MAPPING_ARCHIVED_' + todayStr;
-    if (data.length > 1 && !archiveCache.get(archiveCacheKey)) {
+    // The daily archive is maintained by writes and the time trigger. Keep a
+    // persistent date marker so readers do not rescan the archive every few hours.
+    var archiveProperties = PropertiesService.getScriptProperties();
+    if (data.length > 1 && archiveProperties.getProperty('ACE_USER_MAPPING_ARCHIVED_DATE') !== todayStr) {
       var archivedData = archiveUserMappingDailySnapshot_(database, data, historyData);
       if (archivedData) {
         historyData = archivedData;
-        archiveCache.put(archiveCacheKey, '1', 21600);
+        archiveProperties.setProperty('ACE_USER_MAPPING_ARCHIVED_DATE', todayStr);
       }
     }
     var activeSs = SpreadsheetApp.getActiveSpreadsheet();
@@ -2201,7 +2203,6 @@ function getUserMappingData(userName, userType, sessionToken, ipAddress, history
     historyPage.forEach(function(entry) {
       historyList.push(makeItem(entry.row, entry.index, true));
     });
-    historyList.sort(function(a,b) { return a.snapshotDate === b.snapshotDate ? a.team.localeCompare(b.team) || a.assignedVJ.localeCompare(b.assignedVJ) || a.userName.localeCompare(b.userName) : (a.snapshotDate < b.snapshotDate ? 1 : -1); });
     return {
       success: true,
       userType: cleanType,
