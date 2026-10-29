@@ -14,33 +14,52 @@
 
 ## โครงสร้างไฟล์
 
-```text
-.
-├── code.gs                 # ส่วนประมวลผลฝั่งเซิร์ฟเวอร์และเชื่อมต่อ Google Sheets/Drive
-├── index.html              # ส่วนติดต่อผู้ใช้ของเว็บแอป
-├── README.md               # ภาพรวมและวิธีเริ่มต้นใช้งาน
-└── docs/
-    └── PROJECT_GUIDE.md    # คู่มือติดตั้ง ตั้งค่า และดูแลระบบ
-```
+    .
+    ├── code.gs
+    ├── index.html
+    ├── appsscript.json
+    ├── scripts/
+    │   ├── setup-gas.ps1
+    │   ├── upload-dev.ps1
+    │   └── release-prod.ps1
+    ├── docs/
+    │   ├── DEPLOYMENT.md
+    │   └── PROJECT_GUIDE.md
+    └── README.md
 
-## เริ่มต้นใช้งาน
+## อัปโหลดไปยัง Google Apps Script
 
-1. เปิดหรือสร้างโปรเจกต์ที่ [script.google.com](https://script.google.com/)
-2. วางเนื้อหา `code.gs` ในไฟล์สคริปต์ และสร้างไฟล์ HTML ชื่อ `index` จากนั้นวางเนื้อหาของ `index.html`
-3. ตรวจสอบว่าบัญชีเจ้าของสคริปต์เข้าถึง Google Sheets และ Google Drive ที่ระบบใช้งานได้
-4. บันทึกโปรเจกต์ แล้วเลือก **Deploy → Test deployments → Web app** เพื่อทดสอบผ่าน URL `/dev`
-5. เปิด URL `/dev` ด้วยบัญชีที่มีสิทธิ์แก้ไขโปรเจกต์ Apps Script
+ต้องติดตั้ง Node.js และ clasp ก่อน โดยเปิด PowerShell ในโฟลเดอร์โปรเจกต์:
 
-อ่านรายละเอียดการติดตั้งและการตรวจสอบระบบได้ที่ [คู่มือระบบ](docs/PROJECT_GUIDE.md)
+    npm install --global @google/clasp
+    clasp login
+
+1. ดู Script ID ได้จาก Apps Script → Project Settings → IDs แล้วตั้งค่าปลายทางครั้งแรก:
+
+    .\scripts\setup-gas.ps1 -ScriptId "SCRIPT_ID"
+
+2. ตรวจสอบไฟล์ที่จะส่งและอัปโหลดเพื่อทดสอบ /dev:
+
+    .\scripts\upload-dev.ps1
+
+   สคริปต์จะแสดงปลายทางและรายการไฟล์ แล้วรอให้พิมพ์ PUSH ก่อนเขียนทับไฟล์ใน Apps Script การ push จะทำให้ /dev ใช้ซอร์สล่าสุด แต่ไม่เปลี่ยนเวอร์ชันของ /exec
+
+3. หลังทดสอบ /dev แล้ว หากต้องการอัปเดตเว็บแอป /exec ให้สร้างเวอร์ชันใน Apps Script หรือใช้ clasp version "คำอธิบายการปล่อยเวอร์ชัน" จากนั้นระบุ Deployment ID และเลขเวอร์ชัน:
+
+    .\scripts\release-prod.ps1 -DeploymentId "DEPLOYMENT_ID" -VersionNumber "VERSION_NUMBER"
+
+   สคริปต์จะขอให้พิมพ์ DEPLOY ก่อนเปลี่ยน Deployment ที่ระบุ
+
+ดูขั้นตอน สิทธิ์ และแนวทางแก้ปัญหาเพิ่มเติมที่ คู่มืออัปโหลดและปล่อยเวอร์ชัน (docs/DEPLOYMENT.md)
 
 ## ข้อมูลและความปลอดภัย
 
-- ระบบใช้ Google Sheets เดิมและต้องคงโครงสร้างข้อมูลที่ใช้อยู่ โดยเฉพาะคอลัมน์ A–J ใน `User_Mapping`
-- โค้ดฝั่งเซิร์ฟเวอร์อ้างอิง Spreadsheet ID ที่กำหนดไว้ และมีค่า PIN สำรองสำหรับเข้าสู่ระบบในโค้ดปัจจุบัน
-- คลังซอร์สนี้ตั้งค่าเป็น **สาธารณะ** ก่อนใช้งานจริง ผู้ดูแลควรตรวจสอบค่าเริ่มต้นด้านรหัสผ่าน การเปิดเผย Spreadsheet ID และการตั้งค่าสิทธิ์ของ Web App
-- ห้ามบันทึก OAuth Token, API Key, รหัสผ่านจริง หรือข้อมูลส่วนบุคคลลงใน Git
-- URL `/dev` ใช้ทดสอบและจำกัดการเข้าถึงไว้สำหรับผู้แก้ไขโปรเจกต์ หากเปิดให้ผู้ใช้ทั่วไป ให้เลือกประเภทการนำไปใช้งานและกลุ่มผู้มีสิทธิ์ให้ตรงตามนโยบายองค์กร
+- ระบบใช้ Google Sheets เดิมและต้องคงโครงสร้างข้อมูลที่ใช้อยู่ โดยเฉพาะคอลัมน์ A–J ใน User_Mapping
+- ห้ามบันทึก OAuth Token, API Key, รหัสผ่านจริง หรือไฟล์ .clasp.json ลงใน Git
+- .claspignore จำกัดไฟล์ที่ส่งไป Apps Script ให้มีเพียง code.gs, index.html และ appsscript.json
+- URL /dev ใช้ทดสอบและจำกัดการเข้าถึงไว้สำหรับผู้แก้ไขโปรเจกต์ Apps Script
+- ตรวจสอบการตั้งค่า Execute as และ Who has access ของ Web App ให้ตรงกับนโยบาย Google Workspace
 
-## การแก้ไขและทดสอบ
+## การพัฒนา
 
-ปัจจุบันไฟล์ส่วนติดต่อผู้ใช้ไม่มีขั้นตอน Build เพิ่มเติม เมื่อแก้ไขไฟล์ในคลังซอร์สแล้ว ให้นำเนื้อหาไปอัปเดตในโปรเจกต์ Apps Script และบันทึกก่อนทดสอบผ่าน `/dev`
+แก้ไข code.gs และ index.html ในคลังนี้ แล้วใช้สคริปต์อัปโหลดตามขั้นตอนข้างต้น การ push ไม่ได้สร้างเวอร์ชันใหม่ของ /exec โดยอัตโนมัติ

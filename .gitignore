@@ -1,0 +1,6 @@
+# Local Apps Script project binding (contains the target Script ID)
+.clasp.json
+.clasprc.json
+
+# Local tooling
+node_modules/
