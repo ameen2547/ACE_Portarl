@@ -1,58 +1,58 @@
-# ACE Content Portal — Project and Deployment Guide
+# ACE Content Portal — คู่มือโปรเจกต์และการนำไปใช้งาน
 
-## 1. Architecture
+## 1. ภาพรวมโครงสร้างระบบ
 
-ACE Content Portal is a Google Apps Script Web App with two runtime source files:
+ACE Content Portal เป็นเว็บแอปที่พัฒนาด้วย Google Apps Script และมีไฟล์หลักสำหรับทำงาน 2 ไฟล์
 
-- `code.gs` implements `doGet`, login and dashboard APIs, KPI processing, User Mapping, attendance integration, announcements, access control, logging, and avatar cache operations.
-- `index.html` contains the login page, responsive sidebar, admin and VJ/MC views, CSS, and browser-side JavaScript. It calls backend functions through `google.script.run`.
+- `code.gs` ทำงานฝั่งเซิร์ฟเวอร์ ประกอบด้วย `doGet`, API สำหรับเข้าสู่ระบบและแดชบอร์ด การประมวลผล KPI การจัดการ User Mapping การเชื่อมต่อข้อมูลเวลาเข้า–ออกงาน ประกาศข่าวสาร การตรวจสอบสิทธิ์ การบันทึกเหตุการณ์ และการจัดการแคชรูปโปรไฟล์
+- `index.html` ทำงานฝั่งผู้ใช้ ประกอบด้วยหน้าเข้าสู่ระบบ เมนูด้านข้างที่ปรับตามขนาดหน้าจอ หน้าสำหรับผู้ดูแลระบบและ VJ/MC, CSS และ JavaScript ซึ่งเรียกใช้ฟังก์ชันฝั่งเซิร์ฟเวอร์ผ่าน `google.script.run`
 
-The project uses existing Google Sheets as its data stores. It also reads the external attendance workbook and uses Drive for cached profile images. The source contains the configured spreadsheet IDs; keep them aligned with the intended environment.
+ระบบจัดเก็บข้อมูลใน Google Sheets ที่มีอยู่ อ่านข้อมูลจากสมุดงานเวลาเข้า–ออกงานภายนอก และใช้ Google Drive สำหรับเก็บแคชรูปโปรไฟล์ โดยมี Spreadsheet ID ที่กำหนดไว้ในซอร์สโค้ด โปรดตรวจสอบให้ ID เหล่านี้ตรงกับสภาพแวดล้อมที่ต้องการใช้งาน
 
-## 2. Deploy to a Google Apps Script project
+## 2. ติดตั้งในโปรเจกต์ Google Apps Script
 
-1. Open the Apps Script project that is bound to or authorized for the ACE workbook.
-2. Create or update the script file `code.gs` with the repository version.
-3. Create an HTML file named `index` (Apps Script adds the `.html` extension) and paste the contents of `index.html`.
-4. Save all files. Check the Apps Script editor for parse errors before opening the Web App.
-5. In the editor, run the required setup/authorization functions when the project asks for Google Sheets, Drive, or URL Fetch permissions. Review the requested permissions and authorize using the intended owner account.
-6. Select **Deploy → Test deployments → Web app**, copy the `/dev` URL, and test it while signed in as a project Editor.
-7. After changing source, save the project and reload `/dev` to test the latest saved code.
+1. เปิดโปรเจกต์ Apps Script ที่ผูกกับสมุดงาน ACE หรือได้รับสิทธิ์ให้เข้าถึงสมุดงานดังกล่าว
+2. สร้างหรืออัปเดตไฟล์สคริปต์ `code.gs` ด้วยเนื้อหาจากคลังซอร์ส
+3. สร้างไฟล์ HTML ชื่อ `index` (Apps Script จะเติมนามสกุล `.html` ให้) แล้ววางเนื้อหาจาก `index.html`
+4. บันทึกไฟล์ทั้งหมด และตรวจสอบข้อผิดพลาดทางไวยากรณ์ในตัวแก้ไข Apps Script ก่อนเปิดเว็บแอป
+5. หากระบบขอสิทธิ์ Google Sheets, Drive หรือ URL Fetch ให้เรียกใช้ฟังก์ชันตั้งค่าหรือฟังก์ชันที่เกี่ยวข้องจากตัวแก้ไข ตรวจสอบสิทธิ์ที่ร้องขอและอนุญาตด้วยบัญชีเจ้าของระบบที่ถูกต้อง
+6. เลือก **Deploy → Test deployments → Web app** คัดลอก URL ที่ลงท้ายด้วย `/dev` แล้วทดสอบด้วยบัญชีที่แก้ไขโปรเจกต์ได้
+7. เมื่อแก้ไขซอร์ส ให้บันทึกโปรเจกต์แล้วโหลด `/dev` ใหม่เพื่อทดสอบโค้ดล่าสุด
 
-## 3. Data and schema expectations
+## 3. ข้อมูลและโครงสร้างชีต
 
-- Do not remove or rename existing sheets or columns relied on by the current project.
-- Preserve columns A–J in `User_Mapping`.
-- The project may create supporting sheets for logs, announcements, snapshots, avatar references, or local attendance corrections when required by existing code.
-- Attendance source data is expected in an `Attendance_Logs` sheet. Shift rules may be read from `Shift_Settings` when available.
-- Sheet names, header names, and access rights must match the connected workbooks. Verify permissions using the account that executes the Web App.
+- ห้ามลบหรือเปลี่ยนชื่อชีตและคอลัมน์เดิมที่ระบบใช้งาน
+- ต้องคงคอลัมน์ A–J ใน `User_Mapping`
+- โค้ดอาจสร้างชีตประกอบสำหรับบันทึกเหตุการณ์ ประกาศ ภาพสำรอง ข้อมูลอ้างอิงรูปโปรไฟล์ หรือรายการแก้ไขเวลาเข้า–ออกงานตามการทำงานเดิมของระบบ
+- แหล่งข้อมูลเวลาเข้า–ออกงานคาดว่าจะมีชีต `Attendance_Logs` และอาจอ่านกติกากะงานจาก `Shift_Settings` หากมีชีตนี้
+- ชื่อชีต ชื่อหัวคอลัมน์ และสิทธิ์การเข้าถึงต้องตรงกับสมุดงานที่เชื่อมต่อ ให้ตรวจสอบสิทธิ์ด้วยบัญชีที่ใช้เรียกเว็บแอป
 
-## 4. Access control and production readiness
+## 4. สิทธิ์การเข้าถึงและความพร้อมก่อนใช้งานจริง
 
-- Review the Admin and VJ/MC PIN fallback branches in `code.gs` before exposing a deployment to a broad audience. Replace test/default credentials with organization-managed authentication before production use.
-- Review `checkAccessPermission`, the user/IP lock behavior, and Logger tracking after any authentication change.
-- Treat spreadsheet IDs and profile data as internal configuration. Do not commit OAuth tokens, API keys, real credentials, or exported user data.
-- A test deployment ending in `/dev` is intended for development and is restricted to users who can edit the Apps Script project.
-- Use an appropriately restricted versioned deployment for production and verify “Execute as” and “Who has access” settings with the workspace administrator.
+- ตรวจสอบส่วน PIN สำรองของผู้ดูแลระบบและ VJ/MC ใน `code.gs` ก่อนเปิดให้ผู้ใช้จำนวนมาก ค่า PIN สำรองหรือค่าทดสอบควรถูกแทนที่ด้วยวิธีพิสูจน์ตัวตนที่องค์กรจัดการก่อนใช้งานจริง
+- หลังเปลี่ยนระบบเข้าสู่ระบบ ให้ตรวจสอบ `checkAccessPermission` การล็อกบัญชีผู้ใช้ การล็อก IP Address และการบันทึกเหตุการณ์อีกครั้ง
+- ให้ถือว่า Spreadsheet ID และข้อมูลโปรไฟล์เป็นการตั้งค่าภายใน ห้ามนำ OAuth Token, API Key, รหัสผ่านจริง หรือข้อมูลผู้ใช้ที่ส่งออกมาใส่ใน Git
+- การนำไปใช้ทดสอบที่ลงท้ายด้วย `/dev` มีไว้สำหรับการพัฒนา และจำกัดสิทธิ์ไว้เฉพาะผู้ที่แก้ไขโปรเจกต์ Apps Script ได้
+- สำหรับใช้งานจริง ให้สร้างการนำไปใช้แบบมีเวอร์ชันและจำกัดผู้มีสิทธิ์ให้เหมาะสม พร้อมตรวจสอบการตั้งค่า **Execute as** และ **Who has access** กับผู้ดูแล Google Workspace
 
-## 5. Troubleshooting
+## 5. แนวทางแก้ปัญหา
 
-### Loading overlay stays visible
+### หน้ากำลังโหลดค้าง
 
-Check DevTools Console for the first syntax error. In the Apps Script editor, verify that there is only one `withSuccessHandler` in the `loadMonthList()` chain and that the frontend calls a backend function present in `code.gs`. Save both files before reloading `/dev`.
+เปิด Console ในเครื่องมือสำหรับนักพัฒนาเพื่อตรวจสอบข้อผิดพลาดแรก จากนั้นตรวจสอบในตัวแก้ไข Apps Script ว่าชุดคำสั่ง `loadMonthList()` มี `withSuccessHandler` ซ้ำหรือไม่ และฟังก์ชันฝั่งหน้าเว็บเรียก API ที่มีอยู่จริงใน `code.gs` หรือไม่ บันทึกไฟล์ทั้งสองก่อนโหลด `/dev` ใหม่
 
-### Spreadsheet or authorization errors
+### พบข้อผิดพลาดจาก Spreadsheet หรือการอนุญาตสิทธิ์
 
-Confirm that the executing account can access each configured workbook and that Apps Script has the required scopes. Run the relevant function from the editor to trigger the Google authorization flow, then retry the Web App.
+ตรวจสอบว่าบัญชีที่ใช้เรียกเว็บแอปเข้าถึงสมุดงานทุกไฟล์ที่กำหนดไว้ และ Apps Script ได้รับสิทธิ์ที่จำเป็นแล้ว เรียกใช้ฟังก์ชันที่เกี่ยวข้องจากตัวแก้ไขเพื่อให้ระบบแสดงหน้าขออนุญาต จากนั้นลองเปิดเว็บแอปอีกครั้ง
 
-### Attendance data does not appear
+### ไม่พบข้อมูลเวลาเข้า–ออกงาน
 
-Confirm the external workbook has the expected `Attendance_Logs` sheet and header fields for name, date, time in, and time out. Check the Apps Script execution log for access or header errors.
+ตรวจสอบว่าสมุดงานภายนอกมีชีต `Attendance_Logs` และมีหัวคอลัมน์สำหรับชื่อ วันที่ เวลาเข้า และเวลาออก ตรวจสอบบันทึกการทำงานใน Apps Script เพิ่มเติมเพื่อหาปัญหาการเข้าถึงหรือชื่อหัวคอลัมน์
 
-### External resources are blocked
+### เบราว์เซอร์บล็อกทรัพยากรภายนอก
 
-The page references third-party CDN assets and external services. Browser extensions, network policy, or content blockers can block those requests. The CSP reporting `ERR_BLOCKED_BY_CLIENT` message may come from a browser blocker; diagnose it separately from application JavaScript errors.
+หน้าเว็บอ้างอิงไฟล์จาก CDN และบริการภายนอก ส่วนขยายเบราว์เซอร์ นโยบายเครือข่าย หรือส่วนบล็อกเนื้อหาอาจปิดกั้นคำขอเหล่านั้น ข้อความ CSP ที่รายงาน `ERR_BLOCKED_BY_CLIENT` อาจเกิดจากส่วนบล็อกของเบราว์เซอร์ ให้ตรวจสอบแยกจากข้อผิดพลาด JavaScript ของระบบ
 
-## 6. Source synchronization
+## 6. ซิงก์ซอร์สโค้ด
 
-The GitHub repository is the source handoff location; it is not automatically connected to Apps Script. Copy each changed file into the matching Apps Script file and save it before testing. Keep the repository and Apps Script project synchronized so `/dev` runs the code represented in Git.
+คลัง GitHub ใช้เก็บและส่งต่อซอร์สโค้ด โดยไม่ได้เชื่อมกับ Apps Script โดยอัตโนมัติ เมื่อแก้ไขไฟล์ ให้นำเนื้อหาของแต่ละไฟล์ไปวางในไฟล์ Apps Script ที่ตรงกันแล้วบันทึกก่อนทดสอบ ควรดูแลให้ซอร์สในคลัง GitHub และโปรเจกต์ Apps Script เป็นรุ่นเดียวกัน เพื่อให้โค้ดที่ทดสอบผ่าน `/dev` ตรงกับโค้ดใน Git
