@@ -296,8 +296,6 @@
         <div>
           <label class="text-xs font-semibold text-slate-600 mb-1.5 block">2. รหัสผ่าน (Passcode / PIN):</label>
           <input type="password" id="vjPasswordInput" placeholder="กรอกรหัสผ่าน..." class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500 transition">
-          <p class="text-[11px] text-slate-400 mt-1">* รหัสผ่านเริ่มต้น:
-            <span class="font-bold text-indigo-600">1234</span></p>
         </div>
 
         <button type="submit" class="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-2xl shadow-lg shadow-indigo-100 transition duration-200">
@@ -617,7 +615,7 @@
       </button>
 
       <button id="admTabPassword" onclick="switchAdminTab('password')" class="px-4 py-2.5 rounded-xl font-bold text-xs whitespace-nowrap text-slate-600 hover:bg-slate-100">
-        🔑 ค้นหารหัสผ่าน
+        🛡️ ความปลอดภัยบัญชี
       </button>
       <!-- 1. ปุ่ม Tab ใน Admin Navigation Bar (ใส่ต่อท้ายปุ่ม Admin Tab เดิม) -->
       <button id="admTabUserMap" onclick="switchAdminTab('userMap')" class="px-4 py-2.5 rounded-xl font-bold text-xs whitespace-nowrap text-teal-600 hover:bg-teal-50 border border-teal-200">
@@ -671,7 +669,6 @@
               <th class="p-3 text-right">Target KPI</th>
               <th class="p-3 text-right">ยอดสะสม (เพชร)</th>
               <th class="p-3 text-center">% Achievement</th>
-              <th class="p-3 text-center">รหัสผ่าน</th>
             </tr>
           </thead>
           <tbody id="admOverallTbody" class="divide-y divide-slate-100"></tbody>
@@ -921,8 +918,7 @@
     <section id="admViewPassword"
       class="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-6 space-y-4 hidden">
       <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-        <h3 class="font-bold text-slate-800 text-base">🔑 ระบบค้นหารหัสผ่าน VJ (Password & PIN Lookup)</h3>
-        <input type="text" id="admSearchPassword" oninput="filterAdminPasswordGrid()" placeholder="🔍 ค้นหาชื่อ VJ / ชื่อจริง / ทีม..." class="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs outline-none focus:ring-2 focus:ring-purple-500 w-full sm:w-72">
+        <h3 class="font-bold text-slate-800 text-base">🛡️ ความปลอดภัยข้อมูลบัญชี</h3>
       </div>
       <div id="admPasswordGrid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
     </section>
@@ -1471,9 +1467,9 @@
 
   <script>
     var currentSessionVJ = "";
-    var currentSessionPass = "";
+    var currentSessionToken = "";
     var currentAdminUser = "";
-    var currentAdminPin = "";
+    var currentAdminToken = "";
     var clientIpAddress = "-";
     var clientDeviceInfo = "-";
     var cachedAdminData = null;
@@ -1722,41 +1718,52 @@
             showCustomAlert(res.message, 'เกิดข้อผิดพลาด');
           }
         })
-        .saveSystemVersionInfo(ver, title, changelog, currentAdminUser, clientIpAddress, clientDeviceInfo);
+        .saveSystemVersionInfo(ver, title, changelog, currentAdminUser, clientIpAddress, clientDeviceInfo, currentAdminToken);
     }
 
     // --- AUTO-LOGIN / PERSISTENT SESSION ---
-    function saveSession(type, username, pin) {
-      var sessionData = { type: type, username: username, pin: pin };
-      localStorage.setItem('ace_session', JSON.stringify(sessionData));
+    function saveSession(type, username, token) {
+      if (!token) return;
+      sessionStorage.setItem('ace_session', JSON.stringify({ type: type, username: username, token: token }));
     }
 
     function clearSession() {
+      var previous = null;
+      try { previous = JSON.parse(sessionStorage.getItem('ace_session') || 'null'); } catch (e) {}
+      var token = (previous && previous.token) || currentSessionToken || currentAdminToken;
       localStorage.removeItem('ace_session');
+      sessionStorage.removeItem('ace_session');
+      if (token && typeof google !== 'undefined' && google.script && google.script.run) google.script.run.endSession(token);
+      currentSessionToken = '';
+      currentAdminToken = '';
     }
 
     function checkAndAutoLogin() {
-      var saved = localStorage.getItem('ace_session');
+      // Discard legacy PIN-bearing localStorage sessions. Only the server-issued token persists.
+      localStorage.removeItem('ace_session');
+      var saved = sessionStorage.getItem('ace_session');
       if (!saved) return;
 
       try {
         var session = JSON.parse(saved);
-        if (session.type === 'vj' && session.username && session.pin) {
+        if (session.type === 'vj' && session.username && session.token) {
+          currentSessionVJ = session.username;
+          currentSessionToken = session.token;
           var vjSel = document.getElementById('vjLoginSelect');
-          var vjPass = document.getElementById('vjPasswordInput');
-          if (vjSel && vjPass) {
+          if (vjSel) {
             vjSel.value = session.username;
-            vjPass.value = session.pin;
             submitVJLogin(true);
           }
-        } else if (session.type === 'admin' && session.username && session.pin) {
+        } else if (session.type === 'admin' && session.username && session.token) {
+          currentAdminUser = session.username;
+          currentAdminToken = session.token;
           var admSel = document.getElementById('adminLoginSelect');
-          var admPass = document.getElementById('adminPasswordInput');
-          if (admSel && admPass) {
+          if (admSel) {
             admSel.value = session.username;
-            admPass.value = session.pin;
             submitAdminLogin(true);
           }
+        } else {
+          clearSession();
         }
       } catch (e) {
         clearSession();
@@ -1772,9 +1779,9 @@
     }
 
     function refreshCurrentView() {
-      if (currentAdminUser && currentAdminPin) {
+      if (currentAdminUser && currentAdminToken) {
         submitAdminLogin(true);
-      } else if (currentSessionVJ && currentSessionPass) {
+      } else if (currentSessionVJ && currentSessionToken) {
         submitVJLogin(true);
       } else {
         loadMonthList();
@@ -1881,17 +1888,7 @@
         checkAndAutoLogin();
       }
 
-      if (bootstrapResult) { renderVJLoginDropdown(bootstrapResult); return; }
-      google.script.run
-        .withSuccessHandler(renderVJLoginDropdown)
-        .withFailureHandler(function(err) {
-          var sel = document.getElementById('vjLoginSelect');
-          var lockSel = document.getElementById('lockUserSelect');
-          if (sel) sel.innerHTML = '<option value="">-- โหลดรายชื่อไม่สำเร็จ --</option>';
-          if (lockSel) lockSel.innerHTML = '<option value="">-- โหลดรายชื่อไม่สำเร็จ --</option>';
-          console.error('โหลดรายชื่อ VJ ไม่สำเร็จ:', err);
-        })
-        .getVJListForLogin();
+      renderVJLoginDropdown(bootstrapResult || { success: false, message: 'ไม่มีข้อมูลเริ่มต้นจากเซิร์ฟเวอร์' });
     }
 
     function loadAdminLoginDropdown(bootstrapResult) {
@@ -1910,10 +1907,7 @@
           sel.appendChild(fragment);
         }
       }
-      if (bootstrapResult) { renderAdminLoginDropdown(bootstrapResult); return; }
-      google.script.run
-        .withSuccessHandler(renderAdminLoginDropdown)
-        .getAdminNames();
+      renderAdminLoginDropdown(bootstrapResult || { success: false, adminList: [] });
     }
 
     function switchLoginTab(mode) {
@@ -1960,8 +1954,9 @@
       var pass = document.getElementById('vjPasswordInput').value;
       var month = document.getElementById('monthSelect').value;
 
-      if (!vjName) { if (!isAuto) showCustomAlert('โปรดเลือกชื่อ VJ', 'ข้อมูลไม่สมบูรณ์'); return; }
-      if (!pass) { if (!isAuto) showCustomAlert('โปรดกรอกรหัสผ่าน', 'ข้อมูลไม่สมบูรณ์'); return; }
+      if (!vjName) { if (isAuto) clearSession(); else showCustomAlert('โปรดเลือกชื่อ VJ', 'ข้อมูลไม่สมบูรณ์'); return; }
+      if (!isAuto && !pass) { showCustomAlert('โปรดกรอกรหัสผ่าน', 'ข้อมูลไม่สมบูรณ์'); return; }
+      if (isAuto && !currentSessionToken) { clearSession(); return; }
 
       showLoading('กำลังตรวจสอบข้อมูล VJ...');
       google.script.run
@@ -1969,7 +1964,8 @@
           hideLoading();
           if (res.success) {
             currentSessionVJ = vjName;
-            currentSessionPass = pass;
+            currentSessionToken = res.sessionToken || currentSessionToken;
+            document.getElementById('vjPasswordInput').value = '';
             cachedVJData = res;
             currentAnnouncements = res.announcements || [];
             if (res.systemVersionInfo) {
@@ -1977,7 +1973,7 @@
               document.getElementById('headerVersionBadge').textContent = res.systemVersionInfo.version || 'v2.6.0';
             }
 
-            saveSession('vj', vjName, pass);
+            saveSession('vj', vjName, currentSessionToken);
 
             document.getElementById('loginSection').classList.add('hidden');
             document.getElementById('personalDashboardSection').classList.remove('hidden');
@@ -1988,15 +1984,25 @@
             checkAndShowAnnouncementsPopup(currentAnnouncements, vjName, 'VJ');
           } else {
             clearSession();
+            if (isAuto) {
+              currentSessionVJ = '';
+              document.getElementById('loginSection').classList.remove('hidden');
+              document.getElementById('personalDashboardSection').classList.add('hidden');
+            }
             if (!isAuto) showCustomAlert(res.message, 'การเข้าสู่ระบบไม่สำเร็จ');
           }
         })
-        .verifyAndGetPersonalData(vjName, pass, month, clientIpAddress, clientDeviceInfo);
+        .withFailureHandler(function(err) {
+          hideLoading();
+          if (isAuto) { clearSession(); currentSessionVJ = ''; }
+          else showCustomAlert('เข้าสู่ระบบไม่สำเร็จ: ' + (err && err.message ? err.message : err), 'เกิดข้อผิดพลาด');
+        })
+        .verifyAndGetPersonalData(vjName, isAuto ? '' : pass, month, clientIpAddress, clientDeviceInfo, isAuto ? currentSessionToken : '');
     }
 
     function renderVJDashboard(res) {
       var p = res.personalData;
-      document.getElementById('myAvatar').src = p.profilePic;
+      document.getElementById('myAvatar').src = mappingImageSource(p.profilePic) || mappingFallbackAvatar(p.stageName);
       document.getElementById('myStageName').textContent = p.stageName;
       document.getElementById('myTeamBadge').textContent = p.team;
       document.getElementById('myFullName').textContent = p.fullName;
@@ -2007,9 +2013,18 @@
       
       var noticeBox = document.getElementById('rankUpNotice');
       if (p.nextRankInfo && p.nextRankInfo.diamondsNeededToPass) {
-        noticeBox.innerHTML = '<p class="text-xs font-semibold">⚡ อีกเพียง <span class="text-amber-300 font-extrabold">' + p.nextRankInfo.diamondsNeededToPass.toLocaleString() + '</span> เพชร</p><p class="text-[11px] text-indigo-200">เพื่อแซงอันดับที่ ' + p.nextRankInfo.aheadRank + ' (' + p.nextRankInfo.aheadVJName + ')</p>';
+        noticeBox.replaceChildren();
+        var rankMessage = document.createElement('p'); rankMessage.className = 'text-xs font-semibold';
+        rankMessage.textContent = '⚡ อีกเพียง ' + Number(p.nextRankInfo.diamondsNeededToPass || 0).toLocaleString() + ' เพชร';
+        var aheadMessage = document.createElement('p'); aheadMessage.className = 'text-[11px] text-indigo-200';
+        aheadMessage.textContent = 'เพื่อแซงอันดับที่ ' + Number(p.nextRankInfo.aheadRank || 0) + ' (' + mappingText(p.nextRankInfo.aheadVJName) + ')';
+        noticeBox.appendChild(rankMessage); noticeBox.appendChild(aheadMessage);
       } else if (p.rank === 1) {
-        noticeBox.innerHTML = '<p class="text-xs font-semibold">👑 คุณคือนำอันดับ 1 ของบริษัท!</p><p class="text-[11px] text-indigo-200">นำอันดับสองอยู่ ' + (p.nextRankInfo ? p.nextRankInfo.leadMargin.toLocaleString() : 0) + ' เพชร</p>';
+        noticeBox.replaceChildren();
+        var firstMessage = document.createElement('p'); firstMessage.className = 'text-xs font-semibold'; firstMessage.textContent = '👑 คุณคือนำอันดับ 1 ของบริษัท!';
+        var leadMessage = document.createElement('p'); leadMessage.className = 'text-[11px] text-indigo-200';
+        leadMessage.textContent = 'นำอันดับสองอยู่ ' + Number(p.nextRankInfo ? p.nextRankInfo.leadMargin : 0).toLocaleString() + ' เพชร';
+        noticeBox.appendChild(firstMessage); noticeBox.appendChild(leadMessage);
       } else {
         noticeBox.innerHTML = '';
       }
@@ -2017,10 +2032,10 @@
       var banner = document.getElementById('myStatusBanner');
       if (p.progressPercent >= 100) {
         banner.className = "rounded-3xl p-5 border bg-emerald-50 border-emerald-200 text-emerald-800 shadow-sm";
-        banner.innerHTML = '🎉 <span class="font-bold">ยินดีด้วย! คุณบรรลุ KPI Target ประจำเดือนแล้ว</span> ( Achievement: ' + p.progressPercent + '% )';
+        banner.textContent = '🎉 ยินดีด้วย! คุณบรรลุ KPI Target ประจำเดือนแล้ว ( Achievement: ' + Number(p.progressPercent || 0) + '% )';
       } else {
         banner.className = "rounded-3xl p-5 border bg-amber-50 border-amber-200 text-amber-800 shadow-sm";
-        banner.innerHTML = '🎯 <span class="font-bold">คุณกำลังอยู่ในเส้นทางสู่ KPI Target</span> ( Achievement: ' + p.progressPercent + '% )';
+        banner.textContent = '🎯 คุณกำลังอยู่ในเส้นทางสู่ KPI Target ( Achievement: ' + Number(p.progressPercent || 0) + '% )';
       }
 
       document.getElementById('myTargetVal').textContent = p.targetDiamond.toLocaleString();
@@ -2038,7 +2053,9 @@
 
         var box = document.createElement('div');
         box.className = "p-2.5 rounded-2xl border text-xs flex flex-col justify-between bg-slate-50 border-slate-200 text-slate-700";
-        box.innerHTML = '<div><span class="text-[10px] text-slate-400 font-bold block">วันที่ ' + d + '</span><span class="font-bold text-sm block mt-0.5">' + (typeof earn === 'number' ? earn.toLocaleString() : earn) + '</span></div>';
+        var dayLabel = document.createElement('span'); dayLabel.className = 'text-[10px] text-slate-400 font-bold block'; dayLabel.textContent = 'วันที่ ' + d;
+        var earnValue = document.createElement('span'); earnValue.className = 'font-bold text-sm block mt-0.5'; earnValue.textContent = typeof earn === 'number' ? earn.toLocaleString() : mappingText(earn);
+        var content = document.createElement('div'); content.appendChild(dayLabel); content.appendChild(earnValue); box.appendChild(content);
         dailyGrid.appendChild(box);
       }
 
@@ -2068,13 +2085,15 @@
       records.forEach(function(r) {
         var tr = document.createElement('tr');
         var stClass = r.status === 'ตรงเวลา' ? 'bg-emerald-100 text-emerald-800' : (r.status === 'สาย' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800');
-        tr.innerHTML = '<td class="p-3 font-semibold text-slate-700">' + r.date + '</td>' +
-          '<td class="p-3 text-slate-500">' + r.scheduledShift + '</td>' +
-          '<td class="p-3 text-center font-bold text-slate-800">' + (r.clockIn || '-') + '</td>' +
-          '<td class="p-3 text-center font-bold text-slate-800">' + (r.clockOut || '-') + '</td>' +
-          '<td class="p-3 text-center text-slate-600">' + r.workHours + ' ชม.</td>' +
-          '<td class="p-3 text-center font-bold text-amber-600">' + (r.lateMinutes > 0 ? r.lateMinutes + ' นาที' : '-') + '</td>' +
-          '<td class="p-3 text-center"><span class="px-2.5 py-1 rounded-full text-[10px] font-bold ' + stClass + '">' + r.status + '</span></td>';
+        createMappingCell(tr, 'p-3 font-semibold text-slate-700', r.date);
+        createMappingCell(tr, 'p-3 text-slate-500', r.scheduledShift);
+        createMappingCell(tr, 'p-3 text-center font-bold text-slate-800', r.clockIn);
+        createMappingCell(tr, 'p-3 text-center font-bold text-slate-800', r.clockOut);
+        createMappingCell(tr, 'p-3 text-center text-slate-600', Number(r.workHours || 0) + ' ชม.');
+        createMappingCell(tr, 'p-3 text-center font-bold text-amber-600', Number(r.lateMinutes || 0) > 0 ? Number(r.lateMinutes) + ' นาที' : '-');
+        var statusCell = document.createElement('td'); statusCell.className = 'p-3 text-center';
+        var statusBadge = document.createElement('span'); statusBadge.className = 'px-2.5 py-1 rounded-full text-[10px] font-bold ' + stClass; statusBadge.textContent = mappingText(r.status) || '-';
+        statusCell.appendChild(statusBadge); tr.appendChild(statusCell);
         tbody.appendChild(tr);
       });
     }
@@ -2172,7 +2191,6 @@
 
     function logoutVJ() {
       currentSessionVJ = "";
-      currentSessionPass = "";
       cachedVJData = null;
       hideKPITopHeaderBar();
       clearSession();
@@ -2188,8 +2206,9 @@
       var pin = document.getElementById('adminPasswordInput').value;
       var month = document.getElementById('monthSelect').value;
 
-      if (!admName) { if (!isAuto) showCustomAlert('โปรดเลือกบัญชี Admin', 'ข้อมูลไม่สมบูรณ์'); return; }
-      if (!pin) { if (!isAuto) showCustomAlert('โปรดกรอกรหัสผ่าน Admin', 'ข้อมูลไม่สมบูรณ์'); return; }
+      if (!admName) { if (isAuto) clearSession(); else showCustomAlert('โปรดเลือกบัญชี Admin', 'ข้อมูลไม่สมบูรณ์'); return; }
+      if (!isAuto && !pin) { showCustomAlert('โปรดกรอกรหัสผ่าน Admin', 'ข้อมูลไม่สมบูรณ์'); return; }
+      if (isAuto && !currentAdminToken) { clearSession(); return; }
 
       showLoading('กำลังเข้าสู่ระบบ Admin...');
       google.script.run
@@ -2197,7 +2216,8 @@
           hideLoading();
           if (res.success) {
             currentAdminUser = admName;
-            currentAdminPin = pin;
+            currentAdminToken = res.sessionToken || currentAdminToken;
+            document.getElementById('adminPasswordInput').value = '';
             cachedAdminData = res;
             currentAnnouncements = res.announcements || [];
             if (res.systemVersionInfo) {
@@ -2206,7 +2226,7 @@
               populateVersionSettingForm(res.systemVersionInfo);
             }
 
-            saveSession('admin', admName, pin);
+            saveSession('admin', admName, currentAdminToken);
 
             document.getElementById('loginSection').classList.add('hidden');
             document.getElementById('adminDashboardSection').classList.remove('hidden');
@@ -2216,10 +2236,20 @@
             checkAndShowAnnouncementsPopup(currentAnnouncements, admName, 'ADMIN');
           } else {
             clearSession();
+            if (isAuto) {
+              currentAdminUser = '';
+              document.getElementById('loginSection').classList.remove('hidden');
+              document.getElementById('adminDashboardSection').classList.add('hidden');
+            }
             if (!isAuto) showCustomAlert(res.message, 'การเข้าสู่ระบบไม่สำเร็จ');
           }
         })
-        .getAdminDashboardData(admName, pin, month, clientIpAddress, clientDeviceInfo);
+        .withFailureHandler(function(err) {
+          hideLoading();
+          if (isAuto) { clearSession(); currentAdminUser = ''; }
+          else showCustomAlert('เข้าสู่ระบบไม่สำเร็จ: ' + (err && err.message ? err.message : err), 'เกิดข้อผิดพลาด');
+        })
+        .getAdminDashboardData(admName, isAuto ? '' : pin, month, clientIpAddress, clientDeviceInfo, isAuto ? currentAdminToken : '');
     }
 
     function renderAdminDashboard(res) {
@@ -2260,23 +2290,32 @@
 
     function renderAdminOverallTable(list) {
       var tbody = document.getElementById('admOverallTbody');
-      tbody.innerHTML = '';
+      tbody.replaceChildren();
+      if (!list || list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-400">ไม่พบข้อมูล VJ</td></tr>';
+        return;
+      }
       list.forEach(function(vj) {
         var tr = document.createElement('tr');
         tr.className = "hover:bg-slate-50 transition";
-        tr.innerHTML = '<td class="p-3 text-center font-black text-slate-700">#' + vj.rank + '</td>' +
-          '<td class="p-3 font-bold text-slate-800">' +
-            '<button onclick="jumpToVJProfile(\'' + vj.vjName + '\')" class="flex items-center gap-2 text-indigo-600 hover:text-indigo-800 hover:underline text-left">' +
-              '<img src="' + vj.profilePic + '" class="w-7 h-7 rounded-full object-cover border border-indigo-200">' +
-              '<span>' + vj.vjName + '</span>' +
-              '<span class="text-[10px] text-slate-400 font-normal">(' + vj.fullName + ') 🔗</span>' +
-            '</button>' +
-          '</td>' +
-          '<td class="p-3 text-slate-600 font-medium">' + vj.team + '</td>' +
-          '<td class="p-3 text-right font-medium text-slate-600">' + vj.targetDiamond.toLocaleString() + '</td>' +
-          '<td class="p-3 text-right font-bold text-indigo-600">' + vj.currentDiamond.toLocaleString() + '</td>' +
-          '<td class="p-3 text-center font-bold ' + (vj.progressPercent >= 100 ? 'text-emerald-600' : 'text-slate-700') + '">' + vj.progressPercent + '%</td>' +
-          '<td class="p-3 text-center font-mono font-bold text-slate-500 bg-slate-100 rounded-lg">' + vj.password + '</td>';
+        createMappingCell(tr, 'p-3 text-center font-black text-slate-700', '#' + Number(vj.rank || 0));
+        var nameCell = document.createElement('td'); nameCell.className = 'p-3 font-bold text-slate-800';
+        var profileButton = document.createElement('button'); profileButton.type = 'button';
+        profileButton.className = 'flex items-center gap-2 text-indigo-600 hover:text-indigo-800 hover:underline text-left';
+        profileButton.addEventListener('click', function() { jumpToVJProfile(mappingText(vj.vjName)); });
+        var profileImage = document.createElement('img');
+        profileImage.src = mappingImageSource(vj.profilePic) || mappingFallbackAvatar(vj.vjName);
+        profileImage.alt = 'รูปโปรไฟล์ ' + mappingText(vj.vjName); profileImage.loading = 'lazy';
+        profileImage.className = 'w-7 h-7 rounded-full object-cover border border-indigo-200';
+        profileImage.onerror = function() { profileImage.onerror = null; profileImage.src = mappingFallbackAvatar(vj.vjName); };
+        var stage = document.createElement('span'); stage.textContent = mappingText(vj.vjName);
+        var fullName = document.createElement('span'); fullName.className = 'text-[10px] text-slate-400 font-normal'; fullName.textContent = '(' + mappingText(vj.fullName) + ') 🔗';
+        profileButton.appendChild(profileImage); profileButton.appendChild(stage); profileButton.appendChild(fullName); nameCell.appendChild(profileButton); tr.appendChild(nameCell);
+        createMappingCell(tr, 'p-3 text-slate-600 font-medium', vj.team);
+        createMappingCell(tr, 'p-3 text-right font-medium text-slate-600', Number(vj.targetDiamond || 0).toLocaleString());
+        createMappingCell(tr, 'p-3 text-right font-bold text-indigo-600', Number(vj.currentDiamond || 0).toLocaleString());
+        var progress = Number(vj.progressPercent || 0);
+        createMappingCell(tr, 'p-3 text-center font-bold ' + (progress >= 100 ? 'text-emerald-600' : 'text-slate-700'), progress + '%');
         tbody.appendChild(tr);
       });
     }
@@ -2285,34 +2324,35 @@
       var query = document.getElementById('admSearchOverall').value.toLowerCase();
       if (!cachedAdminData) return;
       var filtered = cachedAdminData.vjList.filter(function(v) {
-        return v.vjName.toLowerCase().indexOf(query) !== -1 || v.fullName.toLowerCase().indexOf(query) !== -1 || v.team.toLowerCase().indexOf(query) !== -1;
+        return mappingText(v.vjName).toLowerCase().indexOf(query) !== -1 || mappingText(v.fullName).toLowerCase().indexOf(query) !== -1 || mappingText(v.team).toLowerCase().indexOf(query) !== -1;
       });
       renderAdminOverallTable(filtered);
     }
 
     function renderAdminTeamCards(teamList) {
       var container = document.getElementById('admTeamCardsContainer');
-      container.innerHTML = '';
+      container.replaceChildren();
       teamList.forEach(function(t) {
         var card = document.createElement('div');
         card.className = "bg-white rounded-3xl p-5 border border-slate-200/80 shadow-sm space-y-3";
-        
-        var membersHtml = t.members.map(function(m) {
-          return '<div class="flex justify-between items-center py-1 border-b border-slate-100 text-xs">' +
-            '<button onclick="jumpToVJProfile(\'' + m.vjName + '\')" class="font-semibold text-slate-700 hover:text-indigo-600 hover:underline">#' + m.rank + ' ' + m.vjName + ' 🔗</button>' +
-            '<span class="font-bold text-indigo-600">' + m.currentDiamond.toLocaleString() + ' 💎</span>' +
-          '</div>';
-        }).join('');
-
-        card.innerHTML = '<div class="flex justify-between items-center border-b border-slate-100 pb-2">' +
-          '<h4 class="font-bold text-slate-800 text-base">👥 ทีม: ' + t.teamName + '</h4>' +
-          '<span class="text-xs bg-purple-50 text-purple-700 px-3 py-1 rounded-full font-bold border border-purple-100">' + t.memberCount + ' คน</span>' +
-        '</div>' +
-        '<div class="grid grid-cols-2 gap-2 text-xs text-slate-600 bg-slate-50 p-2.5 rounded-2xl">' +
-          '<div>เพชรรวม: <span class="font-bold text-indigo-600">' + t.totalDiamonds.toLocaleString() + '</span></div>' +
-          '<div>เฉลี่ย/คน: <span class="font-bold text-slate-800">' + t.avgDiamonds.toLocaleString() + '</span></div>' +
-        '</div>' +
-        '<div class="space-y-1 max-h-48 overflow-y-auto custom-scrollbar pt-1">' + membersHtml + '</div>';
+        var cardHeader = document.createElement('div'); cardHeader.className = 'flex justify-between items-center border-b border-slate-100 pb-2';
+        var title = document.createElement('h4'); title.className = 'font-bold text-slate-800 text-base'; title.textContent = '👥 ทีม: ' + mappingText(t.teamName);
+        var count = document.createElement('span'); count.className = 'text-xs bg-purple-50 text-purple-700 px-3 py-1 rounded-full font-bold border border-purple-100'; count.textContent = Number(t.memberCount || 0) + ' คน';
+        cardHeader.appendChild(title); cardHeader.appendChild(count); card.appendChild(cardHeader);
+        var totals = document.createElement('div'); totals.className = 'grid grid-cols-2 gap-2 text-xs text-slate-600 bg-slate-50 p-2.5 rounded-2xl';
+        var total = document.createElement('div'); total.textContent = 'เพชรรวม: ' + Number(t.totalDiamonds || 0).toLocaleString();
+        var average = document.createElement('div'); average.textContent = 'เฉลี่ย/คน: ' + Number(t.avgDiamonds || 0).toLocaleString();
+        totals.appendChild(total); totals.appendChild(average); card.appendChild(totals);
+        var members = document.createElement('div'); members.className = 'space-y-1 max-h-48 overflow-y-auto custom-scrollbar pt-1';
+        (t.members || []).forEach(function(m) {
+          var row = document.createElement('div'); row.className = 'flex justify-between items-center py-1 border-b border-slate-100 text-xs';
+          var button = document.createElement('button'); button.type = 'button'; button.className = 'font-semibold text-slate-700 hover:text-indigo-600 hover:underline';
+          button.textContent = '#' + Number(m.rank || 0) + ' ' + mappingText(m.vjName) + ' 🔗';
+          button.addEventListener('click', function() { jumpToVJProfile(mappingText(m.vjName)); });
+          var earned = document.createElement('span'); earned.className = 'font-bold text-indigo-600'; earned.textContent = Number(m.currentDiamond || 0).toLocaleString() + ' 💎';
+          row.appendChild(button); row.appendChild(earned); members.appendChild(row);
+        });
+        card.appendChild(members);
 
         container.appendChild(card);
       });
@@ -2369,16 +2409,16 @@
       var dailyGridHtml = vj.dailyEarnings.map(function(earn, idx) {
         return '<div class="p-2 rounded-xl border text-center text-xs bg-slate-50 border-slate-200">' +
           '<span class="text-[10px] text-slate-400 font-bold block">วันที่ ' + (idx + 1) + '</span>' +
-          '<span class="font-bold text-slate-800 mt-0.5 block">' + (typeof earn === 'number' ? earn.toLocaleString() : earn) + '</span>' +
+          '<span class="font-bold text-slate-800 mt-0.5 block">' + escapeHtmlForUI(typeof earn === 'number' ? earn.toLocaleString() : earn) + '</span>' +
         '</div>';
       }).join('');
 
       container.innerHTML = '<div class="bg-slate-50 p-5 rounded-3xl border border-slate-200 space-y-4">' +
         '<div class="flex items-center gap-4">' +
-          '<img src="' + vj.profilePic + '" class="w-14 h-14 rounded-full object-cover border-2 border-purple-300">' +
+          '<img src="' + escapeHtmlForUI(mappingImageSource(vj.profilePic) || mappingFallbackAvatar(vj.vjName)) + '" alt="" class="w-14 h-14 rounded-full object-cover border-2 border-purple-300">' +
           '<div>' +
-            '<h4 class="font-extrabold text-slate-800 text-lg">' + vj.vjName + ' <span class="text-xs font-normal text-slate-500">(' + vj.fullName + ')</span></h4>' +
-            '<p class="text-xs text-slate-500">ทีม: <span class="font-bold text-purple-600">' + vj.team + '</span> | Shift: ' + vj.shift + ' | PIN: <span class="font-mono font-bold text-slate-700">' + vj.password + '</span></p>' +
+            '<h4 class="font-extrabold text-slate-800 text-lg">' + escapeHtmlForUI(vj.vjName) + ' <span class="text-xs font-normal text-slate-500">(' + escapeHtmlForUI(vj.fullName) + ')</span></h4>' +
+            '<p class="text-xs text-slate-500">ทีม: <span class="font-bold text-purple-600">' + escapeHtmlForUI(vj.team) + '</span> | Shift: ' + escapeHtmlForUI(vj.shift) + '</p>' +
           '</div>' +
         '</div>' +
         '<div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">' +
@@ -2427,12 +2467,19 @@
         var tr = document.createElement('tr');
         var isLocked = r.status === 'LOCKED';
         tr.className = "hover:bg-slate-50 transition";
-        tr.innerHTML = '<td class="p-2.5 font-bold ' + (r.type === 'USER' ? 'text-purple-700' : 'text-indigo-700') + '">' + (r.type === 'USER' ? '👤 User' : '🌐 IP') + '</td>' +
-          '<td class="p-2.5 font-mono font-bold text-slate-800">' + r.target + '</td>' +
-          '<td class="p-2.5 font-semibold text-slate-600">' + (r.team || '-') + '</td>' +
-          '<td class="p-2.5 text-center"><span class="px-2 py-0.5 rounded-full text-[10px] font-bold ' + (isLocked ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800') + '">' + r.status + '</span></td>' +
-          '<td class="p-2.5 text-slate-600 text-[11px]">' + (r.reason || '-') + '</td>' +
-          '<td class="p-2.5 text-center"><button onclick="quickToggleAccessRule(\'' + r.type + '\', \'' + r.target + '\', \'' + (r.team || '') + '\', \'' + (isLocked ? 'ACTIVE' : 'LOCKED') + '\')" class="px-2.5 py-1 rounded-lg text-[10px] font-bold ' + (isLocked ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-rose-600 text-white hover:bg-rose-700') + '">' + (isLocked ? '🔓 ปลดล็อก' : '🔒 ล็อก') + '</button></td>';
+        createMappingCell(tr, 'p-2.5 font-bold ' + (r.type === 'USER' ? 'text-purple-700' : 'text-indigo-700'), r.type === 'USER' ? '👤 User' : '🌐 IP');
+        createMappingCell(tr, 'p-2.5 font-mono font-bold text-slate-800', r.target);
+        createMappingCell(tr, 'p-2.5 font-semibold text-slate-600', r.team);
+        var stateCell = document.createElement('td'); stateCell.className = 'p-2.5 text-center';
+        var stateBadge = document.createElement('span'); stateBadge.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold ' + (isLocked ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800');
+        stateBadge.textContent = mappingText(r.status); stateCell.appendChild(stateBadge); tr.appendChild(stateCell);
+        createMappingCell(tr, 'p-2.5 text-slate-600 text-[11px]', r.reason);
+        var actionCell = document.createElement('td'); actionCell.className = 'p-2.5 text-center';
+        var action = document.createElement('button'); action.type = 'button';
+        action.className = 'px-2.5 py-1 rounded-lg text-[10px] font-bold ' + (isLocked ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-rose-600 text-white hover:bg-rose-700');
+        action.textContent = isLocked ? '🔓 ปลดล็อก' : '🔒 ล็อก';
+        action.addEventListener('click', function() { quickToggleAccessRule(r.type, r.target, r.team || '', isLocked ? 'ACTIVE' : 'LOCKED'); });
+        actionCell.appendChild(action); tr.appendChild(actionCell);
         tbody.appendChild(tr);
       });
     }
@@ -2445,7 +2492,7 @@
           showCustomAlert(res.message, 'ตั้งค่าสิทธิ์เรียบร้อย');
           refreshCurrentView();
         })
-        .updateAccessRule(type, target, team, newStatus, 'ปรับโดย Admin', currentAdminUser, clientIpAddress, clientDeviceInfo);
+        .updateAccessRule(type, target, team, newStatus, 'ปรับโดย Admin', currentAdminUser, clientIpAddress, clientDeviceInfo, currentAdminToken);
     }
 
     function submitAccessRuleUpdate() {
@@ -2470,7 +2517,7 @@
             showCustomAlert(res.message, 'เกิดข้อผิดพลาด');
           }
         })
-        .updateAccessRule(type, target, team, status, reason, currentAdminUser, clientIpAddress, clientDeviceInfo);
+        .updateAccessRule(type, target, team, status, reason, currentAdminUser, clientIpAddress, clientDeviceInfo, currentAdminToken);
     }
 
     // --- MOM COMPARISON LOGIC & RENDERING ---
@@ -2487,7 +2534,7 @@
             renderMoMView(res);
           }
         })
-        .getKpiComparisonData(currM, prevM);
+        .getKpiComparisonData(currM, prevM, currentAdminToken, clientIpAddress);
     }
 
     function renderMoMView(res) {
@@ -2541,11 +2588,11 @@
       res.teamComparisonList.forEach(function(t) {
         var tr = document.createElement('tr');
         var gClass = t.diff >= 0 ? 'text-emerald-600' : 'text-rose-600';
-        tr.innerHTML = '<td class="p-2.5 font-bold text-slate-800">' + t.teamName + '</td>' +
-          '<td class="p-2.5 text-right font-bold text-indigo-600">' + t.currTotal.toLocaleString() + '</td>' +
-          '<td class="p-2.5 text-right font-medium text-slate-500">' + t.prevTotal.toLocaleString() + '</td>' +
-          '<td class="p-2.5 text-right font-bold ' + gClass + '">' + (t.diff >= 0 ? '+' : '') + t.diff.toLocaleString() + '</td>' +
-          '<td class="p-2.5 text-center font-bold ' + gClass + '">' + (t.growthPct >= 0 ? '+' : '') + t.growthPct + '%</td>';
+        createMappingCell(tr, 'p-2.5 font-bold text-slate-800', t.teamName);
+        createMappingCell(tr, 'p-2.5 text-right font-bold text-indigo-600', Number(t.currTotal || 0).toLocaleString());
+        createMappingCell(tr, 'p-2.5 text-right font-medium text-slate-500', Number(t.prevTotal || 0).toLocaleString());
+        createMappingCell(tr, 'p-2.5 text-right font-bold ' + gClass, (Number(t.diff || 0) >= 0 ? '+' : '') + Number(t.diff || 0).toLocaleString());
+        createMappingCell(tr, 'p-2.5 text-center font-bold ' + gClass, (Number(t.growthPct || 0) >= 0 ? '+' : '') + Number(t.growthPct || 0) + '%');
         teamTbody.appendChild(tr);
       });
 
@@ -2565,16 +2612,17 @@
         var tr = document.createElement('tr');
         var gClass = v.diamDiff >= 0 ? 'text-emerald-600' : 'text-rose-600';
         tr.className = "hover:bg-slate-50 transition";
-        tr.innerHTML = '<td class="p-3 font-bold text-slate-800 flex items-center gap-2">' +
-            '<img src="' + v.profilePic + '" class="w-6 h-6 rounded-full border border-slate-200">' +
-            '<span>' + v.vjName + '</span>' +
-          '</td>' +
-          '<td class="p-3 text-slate-600 font-medium">' + v.team + '</td>' +
-          '<td class="p-3 text-right font-medium text-slate-600">' + v.currTarget.toLocaleString() + '</td>' +
-          '<td class="p-3 text-right font-bold text-indigo-600">' + v.currEarned.toLocaleString() + '</td>' +
-          '<td class="p-3 text-right font-medium text-slate-500">' + v.prevEarned.toLocaleString() + '</td>' +
-          '<td class="p-3 text-right font-bold ' + gClass + '">' + (v.diamDiff >= 0 ? '+' : '') + v.diamDiff.toLocaleString() + '</td>' +
-          '<td class="p-3 text-center font-extrabold ' + gClass + '">' + (v.diamGrowthPercent >= 0 ? '+' : '') + v.diamGrowthPercent + '%</td>';
+        var identity = document.createElement('div'); identity.className = 'flex items-center gap-2';
+        var image = document.createElement('img'); image.src = mappingImageSource(v.profilePic) || mappingFallbackAvatar(v.vjName); image.alt = ''; image.loading = 'lazy'; image.className = 'w-6 h-6 rounded-full border border-slate-200';
+        image.onerror = function() { image.onerror = null; image.src = mappingFallbackAvatar(v.vjName); };
+        var name = document.createElement('span'); name.textContent = mappingText(v.vjName); identity.appendChild(image); identity.appendChild(name);
+        createMappingCell(tr, 'p-3 font-bold text-slate-800', identity);
+        createMappingCell(tr, 'p-3 text-slate-600 font-medium', v.team);
+        createMappingCell(tr, 'p-3 text-right font-medium text-slate-600', Number(v.currTarget || 0).toLocaleString());
+        createMappingCell(tr, 'p-3 text-right font-bold text-indigo-600', Number(v.currEarned || 0).toLocaleString());
+        createMappingCell(tr, 'p-3 text-right font-medium text-slate-500', Number(v.prevEarned || 0).toLocaleString());
+        createMappingCell(tr, 'p-3 text-right font-bold ' + gClass, (Number(v.diamDiff || 0) >= 0 ? '+' : '') + Number(v.diamDiff || 0).toLocaleString());
+        createMappingCell(tr, 'p-3 text-center font-extrabold ' + gClass, (Number(v.diamGrowthPercent || 0) >= 0 ? '+' : '') + Number(v.diamGrowthPercent || 0) + '%');
         tbody.appendChild(tr);
       });
     }
@@ -2591,25 +2639,17 @@
     function renderAdminPasswordGrid(vjList) {
       var grid = document.getElementById('admPasswordGrid');
       grid.innerHTML = '';
-      vjList.forEach(function(v) {
-        var card = document.createElement('div');
-        card.className = "bg-slate-50 p-4 rounded-2xl border border-slate-200 flex justify-between items-center text-xs";
-        card.innerHTML = '<div>' +
-          '<h5 class="font-bold text-slate-800 text-sm">' + v.vjName + '</h5>' +
-          '<p class="text-[11px] text-slate-400">' + v.fullName + ' (' + v.team + ')</p>' +
-        '</div>' +
-        '<div class="bg-white px-3 py-1.5 rounded-xl border border-slate-200 font-mono font-bold text-purple-700 text-sm shadow-sm">' +
-          v.password +
-        '</div>';
-        grid.appendChild(card);
-      });
+      var notice = document.createElement('div');
+      notice.className = 'col-span-full rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-relaxed text-amber-900';
+      notice.textContent = 'ระบบจะไม่แสดง PIN หรือรหัสผ่านของผู้ใช้ในหน้าเว็บ เพื่อป้องกันการเปิดเผยข้อมูลรับรอง หากต้องการรีเซ็ตรหัสผ่าน โปรดดำเนินการในแหล่งข้อมูลที่ผู้ดูแลได้รับสิทธิ์';
+      grid.appendChild(notice);
     }
 
     function filterAdminPasswordGrid() {
       var query = document.getElementById('admSearchPassword').value.toLowerCase();
       if (!cachedAdminData) return;
       var filtered = cachedAdminData.vjList.filter(function(v) {
-        return v.vjName.toLowerCase().indexOf(query) !== -1 || v.fullName.toLowerCase().indexOf(query) !== -1 || v.team.toLowerCase().indexOf(query) !== -1;
+        return String(v.vjName || '').toLowerCase().indexOf(query) !== -1 || String(v.fullName || '').toLowerCase().indexOf(query) !== -1 || String(v.team || '').toLowerCase().indexOf(query) !== -1;
       });
       renderAdminPasswordGrid(filtered);
     }
@@ -2627,16 +2667,20 @@
         var tr = document.createElement('tr');
         var stClass = r.status === 'ตรงเวลา' ? 'bg-emerald-100 text-emerald-800' : (r.status === 'สาย' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800');
         tr.className = "hover:bg-slate-50 transition";
-        tr.innerHTML = '<td class="p-3 font-semibold text-slate-700">' + r.date + '</td>' +
-          '<td class="p-3 font-bold text-slate-800">' + r.vjName + '</td>' +
-          '<td class="p-3 text-slate-500">' + r.team + '</td>' +
-          '<td class="p-3 text-slate-500">' + r.scheduledShift + '</td>' +
-          '<td class="p-3 text-center font-bold text-slate-800">' + (r.clockIn || '-') + '</td>' +
-          '<td class="p-3 text-center font-bold text-slate-800">' + (r.clockOut || '-') + '</td>' +
-          '<td class="p-3 text-center text-slate-600">' + r.workHours + ' ชม.</td>' +
-          '<td class="p-3 text-center font-bold text-amber-600">' + (r.lateMinutes > 0 ? r.lateMinutes + ' น.' : '-') + '</td>' +
-          '<td class="p-3 text-center"><span class="px-2 py-0.5 rounded-full text-[10px] font-bold ' + stClass + '">' + r.status + '</span></td>' +
-          '<td class="p-3 text-center"><button onclick="editAttendanceRow(' + JSON.stringify(r).replace(/"/g, '&quot;') + ')" class="text-purple-600 hover:text-purple-800 font-bold underline">แก้ไข</button></td>';
+        createMappingCell(tr, 'p-3 font-semibold text-slate-700', r.date);
+        createMappingCell(tr, 'p-3 font-bold text-slate-800', r.vjName);
+        createMappingCell(tr, 'p-3 text-slate-500', r.team);
+        createMappingCell(tr, 'p-3 text-slate-500', r.scheduledShift);
+        createMappingCell(tr, 'p-3 text-center font-bold text-slate-800', r.clockIn);
+        createMappingCell(tr, 'p-3 text-center font-bold text-slate-800', r.clockOut);
+        createMappingCell(tr, 'p-3 text-center text-slate-600', Number(r.workHours || 0) + ' ชม.');
+        createMappingCell(tr, 'p-3 text-center font-bold text-amber-600', Number(r.lateMinutes || 0) > 0 ? Number(r.lateMinutes) + ' น.' : '-');
+        var statusCell = document.createElement('td'); statusCell.className = 'p-3 text-center';
+        var badge = document.createElement('span'); badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold ' + stClass; badge.textContent = mappingText(r.status);
+        statusCell.appendChild(badge); tr.appendChild(statusCell);
+        var actionCell = document.createElement('td'); actionCell.className = 'p-3 text-center';
+        var editButton = document.createElement('button'); editButton.type = 'button'; editButton.className = 'text-purple-600 hover:text-purple-800 font-bold underline'; editButton.textContent = 'แก้ไข';
+        editButton.addEventListener('click', function() { editAttendanceRow(r); }); actionCell.appendChild(editButton); tr.appendChild(actionCell);
         tbody.appendChild(tr);
       });
     }
@@ -2725,13 +2769,13 @@
       Object.keys(summaryMap).forEach(function(k) {
         var s = summaryMap[k];
         var tr = document.createElement('tr');
-        tr.innerHTML = '<td class="p-3 font-bold text-slate-800">' + s.vjName + '</td>' +
-          '<td class="p-3 text-slate-500">' + s.team + '</td>' +
-          '<td class="p-3 text-center font-bold text-slate-700">' + s.total + ' วัน</td>' +
-          '<td class="p-3 text-center font-bold text-emerald-600">' + s.onTime + '</td>' +
-          '<td class="p-3 text-center font-bold text-amber-500">' + s.late + '</td>' +
-          '<td class="p-3 text-center font-bold text-rose-500">' + s.absent + '</td>' +
-          '<td class="p-3 text-center font-bold text-slate-600">' + (s.lateMins > 0 ? s.lateMins + ' นาที' : '-') + '</td>';
+        createMappingCell(tr, 'p-3 font-bold text-slate-800', s.vjName);
+        createMappingCell(tr, 'p-3 text-slate-500', s.team);
+        createMappingCell(tr, 'p-3 text-center font-bold text-slate-700', Number(s.total || 0) + ' วัน');
+        createMappingCell(tr, 'p-3 text-center font-bold text-emerald-600', Number(s.onTime || 0));
+        createMappingCell(tr, 'p-3 text-center font-bold text-amber-500', Number(s.late || 0));
+        createMappingCell(tr, 'p-3 text-center font-bold text-rose-500', Number(s.absent || 0));
+        createMappingCell(tr, 'p-3 text-center font-bold text-slate-600', Number(s.lateMins || 0) > 0 ? Number(s.lateMins) + ' นาที' : '-');
         summaryTbody.appendChild(tr);
       });
     }
@@ -2745,13 +2789,13 @@
       }
       logs.forEach(function(l) {
         var tr = document.createElement('tr');
-        tr.innerHTML = '<td class="p-3 font-mono text-[11px] text-slate-500">' + l.timestamp + '</td>' +
-          '<td class="p-3 font-semibold text-purple-700">' + l.userType + '</td>' +
-          '<td class="p-3 font-bold text-slate-800">' + l.userName + '</td>' +
-          '<td class="p-3 font-semibold text-slate-700">' + l.action + '</td>' +
-          '<td class="p-3 text-slate-600 text-[11px]">' + l.details + '</td>' +
-          '<td class="p-3 font-mono text-[11px] text-slate-500 bg-slate-100 rounded-lg text-center">' + (l.ipAddress || '-') + '</td>' +
-          '<td class="p-3 font-semibold text-[11px] text-indigo-600 bg-indigo-50/50 rounded-lg text-center">' + (l.deviceInfo || '-') + '</td>';
+        createMappingCell(tr, 'p-3 font-mono text-[11px] text-slate-500', l.timestamp);
+        createMappingCell(tr, 'p-3 font-semibold text-purple-700', l.userType);
+        createMappingCell(tr, 'p-3 font-bold text-slate-800', l.userName);
+        createMappingCell(tr, 'p-3 font-semibold text-slate-700', l.action);
+        createMappingCell(tr, 'p-3 text-slate-600 text-[11px]', l.details);
+        createMappingCell(tr, 'p-3 font-mono text-[11px] text-slate-500 bg-slate-100 rounded-lg text-center', l.ipAddress);
+        createMappingCell(tr, 'p-3 font-semibold text-[11px] text-indigo-600 bg-indigo-50/50 rounded-lg text-center', l.deviceInfo);
         tbody.appendChild(tr);
       });
     }
@@ -2793,7 +2837,7 @@
             '<span class="px-2.5 py-0.5 rounded-full ' + (s.status === 'EXPIRED' ? 'bg-slate-200 text-slate-600' : (s.status === 'SCHEDULED' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')) + '">' + (s.status === 'EXPIRED' ? 'ปิดแล้ว' : (s.status === 'SCHEDULED' ? 'รอเวลาเผยแพร่' : 'กำลังแสดง')) + '</span>' +
           '</div>' +
         '</div>' +
-        ((s.startsAt || s.endsAt) ? '<p class="text-[11px] text-indigo-700">' + (s.startsAt ? 'เริ่ม ' + s.startsAt.replace('T', ' ') : 'แสดงทันที') + (s.endsAt ? ' · ปิด ' + s.endsAt.replace('T', ' ') : '') + '</p>' : '') +
+        ((s.startsAt || s.endsAt) ? '<p class="text-[11px] text-indigo-700">' + (s.startsAt ? 'เริ่ม ' + escapeHtmlForUI(s.startsAt.replace('T', ' ')) : 'แสดงทันที') + (s.endsAt ? ' · ปิด ' + escapeHtmlForUI(s.endsAt.replace('T', ' ')) : '') + '</p>' : '') +
         '<div class="text-xs text-slate-600 whitespace-pre-line">' + escapeHtmlForUI(s.content) + '</div>' +
         '<div>' +
           '<p class="text-[11px] font-bold text-slate-500 mb-1">รายชื่อผู้เข้าอ่าน/กดรับทราบแล้ว:</p>' +
@@ -2838,7 +2882,6 @@
 
     function logoutAdmin() {
       currentAdminUser = "";
-      currentAdminPin = "";
       cachedAdminData = null;
       hideKPITopHeaderBar();
       clearSession();
@@ -2893,7 +2936,7 @@
 
       document.getElementById('annPopupModal').classList.remove('hidden');
 
-      google.script.run.recordAnnouncementRead(ann.id, userName, userType, false);
+      google.script.run.recordAnnouncementRead(ann.id, userName, userType, false, currentAdminToken || currentSessionToken, clientIpAddress);
     }
 
     function closeAnnouncementPopup() {
@@ -2923,7 +2966,7 @@
           showCustomAlert('✅ ยืนยันการรับทราบประกาศเรียบร้อยแล้ว', 'สำเร็จ');
           refreshCurrentView();
         })
-        .recordAnnouncementRead(activePopupAnnouncement.id, user, type, true);
+        .recordAnnouncementRead(activePopupAnnouncement.id, user, type, true, currentAdminToken || currentSessionToken, clientIpAddress);
     }
 
     function ackAnnFromTab(annId) {
@@ -2935,7 +2978,7 @@
           showCustomAlert('✅ บันทึกการรับทราบเรียบร้อยแล้ว', 'สำเร็จ');
           refreshCurrentView();
         })
-        .recordAnnouncementRead(annId, user, 'VJ', true);
+        .recordAnnouncementRead(annId, user, 'VJ', true, currentSessionToken, clientIpAddress);
     }
 
     function buildAnnouncementImageData(title, content) {
@@ -3032,7 +3075,7 @@
               showCustomAlert(res.message, 'เกิดข้อผิดพลาด');
             }
           })
-          .createAnnouncement(announcementData, currentAdminUser, clientIpAddress, clientDeviceInfo, currentAdminPin);
+          .createAnnouncement(announcementData, currentAdminUser, clientIpAddress, clientDeviceInfo, currentAdminToken);
       };
 
       if (fileInput.files && fileInput.files[0]) {
@@ -3102,7 +3145,7 @@
           clockIn: cIn,
           clockOut: cOut,
           source: note
-        }, currentAdminUser, month, clientIpAddress, clientDeviceInfo);
+        }, currentAdminUser, month, clientIpAddress, clientDeviceInfo, currentAdminToken);
     }
 
     function handleExcelFileUpload(e) {
@@ -3158,7 +3201,7 @@
                 showCustomAlert(res.message, 'เกิดข้อผิดพลาด');
               }
             })
-            .uploadBulkAttendance(records, currentAdminUser, month, clientIpAddress, clientDeviceInfo);
+            .uploadBulkAttendance(records, currentAdminUser, month, clientIpAddress, clientDeviceInfo, currentAdminToken);
 
         } catch (err) {
           hideLoading();
@@ -3194,8 +3237,8 @@
 
       var html = '<div class="space-y-4">' +
         '<div class="text-center border-b pb-3">' +
-          '<h2 class="font-bold text-lg text-slate-800">' + titleText + '</h2>' +
-          '<p class="text-xs text-slate-500">พิมพ์เมื่อ: ' + new Date().toLocaleString('th-TH') + ' | กรอง: ' + scope + (teamFilter ? ' | ทีม: ' + teamFilter : '') + '</p>' +
+          '<h2 class="font-bold text-lg text-slate-800">' + escapeHtmlForUI(titleText) + '</h2>' +
+          '<p class="text-xs text-slate-500">พิมพ์เมื่อ: ' + escapeHtmlForUI(new Date().toLocaleString('th-TH')) + ' | กรอง: ' + escapeHtmlForUI(scope) + (teamFilter ? ' | ทีม: ' + escapeHtmlForUI(teamFilter) : '') + '</p>' +
         '</div>';
 
       if (currentExportMode === 'overall') {
@@ -3208,12 +3251,12 @@
           '</tr></thead><tbody>';
         list.forEach(function(v) {
           html += '<tr>' +
-            '<td class="p-2 border text-center">#' + v.rank + '</td>' +
-            '<td class="p-2 border font-bold">' + v.vjName + '</td>' +
-            '<td class="p-2 border">' + v.team + '</td>' +
-            '<td class="p-2 border text-right">' + v.targetDiamond.toLocaleString() + '</td>' +
-            '<td class="p-2 border text-right font-bold">' + v.currentDiamond.toLocaleString() + '</td>' +
-            '<td class="p-2 border text-center">' + v.progressPercent + '%</td>' +
+            '<td class="p-2 border text-center">#' + Number(v.rank || 0) + '</td>' +
+            '<td class="p-2 border font-bold">' + escapeHtmlForUI(v.vjName) + '</td>' +
+            '<td class="p-2 border">' + escapeHtmlForUI(v.team) + '</td>' +
+            '<td class="p-2 border text-right">' + Number(v.targetDiamond || 0).toLocaleString() + '</td>' +
+            '<td class="p-2 border text-right font-bold">' + Number(v.currentDiamond || 0).toLocaleString() + '</td>' +
+            '<td class="p-2 border text-center">' + Number(v.progressPercent || 0) + '%</td>' +
           '</tr>';
         });
         html += '</tbody></table>';
@@ -3234,14 +3277,14 @@
           '</tr></thead><tbody>';
         attList.forEach(function(r) {
           html += '<tr>' +
-            '<td class="p-2 border">' + r.date + '</td>' +
-            '<td class="p-2 border font-bold">' + r.vjName + '</td>' +
-            '<td class="p-2 border">' + r.team + '</td>' +
-            '<td class="p-2 border">' + r.scheduledShift + '</td>' +
-            '<td class="p-2 border text-center font-bold">' + (r.clockIn || '-') + '</td>' +
-            '<td class="p-2 border text-center font-bold">' + (r.clockOut || '-') + '</td>' +
-            '<td class="p-2 border text-center font-bold text-amber-600">' + (r.lateMinutes || '-') + '</td>' +
-            '<td class="p-2 border text-center font-bold">' + r.status + '</td>' +
+            '<td class="p-2 border">' + escapeHtmlForUI(r.date) + '</td>' +
+            '<td class="p-2 border font-bold">' + escapeHtmlForUI(r.vjName) + '</td>' +
+            '<td class="p-2 border">' + escapeHtmlForUI(r.team) + '</td>' +
+            '<td class="p-2 border">' + escapeHtmlForUI(r.scheduledShift) + '</td>' +
+            '<td class="p-2 border text-center font-bold">' + escapeHtmlForUI(r.clockIn || '-') + '</td>' +
+            '<td class="p-2 border text-center font-bold">' + escapeHtmlForUI(r.clockOut || '-') + '</td>' +
+            '<td class="p-2 border text-center font-bold text-amber-600">' + Number(r.lateMinutes || 0) + '</td>' +
+            '<td class="p-2 border text-center font-bold">' + escapeHtmlForUI(r.status) + '</td>' +
           '</tr>';
         });
         html += '</tbody></table>';
@@ -3360,14 +3403,14 @@ function renderUserMapHistory(list, selectId, containerId) {
         byDate[date][team][vj].sort(function(a,b) { return a.userName.localeCompare(b.userName); }).forEach(function(person) {
           var card = document.createElement('article'); card.className = 'rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs';
           var identity = document.createElement('div'); identity.className = 'flex items-center gap-2';
-          var userPhoto = document.createElement('img'); userPhoto.src = person.userAvatar || ''; userPhoto.alt = ''; userPhoto.className = 'w-8 h-8 rounded-full object-cover border border-slate-200'; userPhoto.setAttribute('data-tiktok-avatar', encodeURIComponent(person.tiktokId || '')); userPhoto.onerror = function() { this.style.display = 'none'; };
-          var vjPhoto = document.createElement('img'); vjPhoto.src = person.vjAvatar || ''; vjPhoto.alt = ''; vjPhoto.className = 'w-7 h-7 rounded-full object-cover border border-purple-200'; vjPhoto.setAttribute('data-tiktok-avatar', encodeURIComponent(person.vjTikTokId || '')); vjPhoto.onerror = function() { this.style.display = 'none'; };
+          var userPhoto = createMappingAvatar(person.tiktokId, person.userAvatar, person.userName || person.tiktokId, 'w-8 h-8 rounded-full object-cover border border-slate-200');
+          var vjPhoto = createMappingAvatar(person.vjTikTokId, person.vjAvatar, person.assignedVJ, 'w-7 h-7 rounded-full object-cover border border-purple-200');
           var name = document.createElement('div'); name.className = 'font-bold text-slate-800'; name.textContent = person.userName || person.tiktokId || 'ไม่ระบุชื่อ';
           identity.appendChild(userPhoto); identity.appendChild(name); identity.appendChild(vjPhoto);
           var meta = document.createElement('div'); meta.className = 'mt-1 text-slate-600'; meta.textContent = 'TikTok: ' + (person.tiktokId || '-') + ' · อัปเดต: ' + (person.updatedDate || '-');
           var stats = document.createElement('div'); stats.className = 'mt-1 text-slate-500'; stats.textContent = 'เหรียญวันนี้ ' + (Number(person.coinsToday) || 0).toLocaleString() + ' · เดือนนี้ ' + (Number(person.coinsMonth) || 0).toLocaleString() + ' · รวม ' + (Number(person.totalDays) || 0) + ' วัน';
           card.appendChild(identity); card.appendChild(meta); card.appendChild(stats);
-          if (person.tiktokUrl) { try { var url = new URL(person.tiktokUrl); if (url.protocol === 'https:') { var link = document.createElement('a'); link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.className = 'mt-2 inline-block text-indigo-600 hover:underline'; link.textContent = 'เปิดโปรไฟล์ TikTok'; card.appendChild(link); } } catch (e) {} }
+          if (person.tiktokUrl) { try { var url = new URL(person.tiktokUrl); if (url.protocol === 'https:' && (url.hostname === 'tiktok.com' || url.hostname.endsWith('.tiktok.com'))) { var link = document.createElement('a'); link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.className = 'mt-2 inline-block text-indigo-600 hover:underline'; link.textContent = 'เปิดโปรไฟล์ TikTok'; card.appendChild(link); } } catch (e) {} }
           people.appendChild(card);
         });
         vjGroup.appendChild(people); teamBody.appendChild(vjGroup);
@@ -3399,7 +3442,94 @@ function loadUserMappingForVJ() {
       }
     })
     .withFailureHandler(function(err) { hideLoading(); showCustomAlert('โหลด User Mapping ไม่สำเร็จ: ' + (err && err.message ? err.message : err), 'เกิดข้อผิดพลาด'); })
-    .getUserMappingData(currentSessionVJ, 'VJ');
+    .getUserMappingData(currentSessionVJ, 'VJ', currentSessionToken, clientIpAddress);
+}
+
+function mappingText(value) {
+  return value === null || value === undefined ? '' : String(value);
+}
+
+function mappingImageSource(value) {
+  var source = mappingText(value).trim();
+  if (/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/i.test(source)) return source;
+  try {
+    var parsed = new URL(source);
+    if (parsed.protocol === 'https:' && ['unavatar.io', 'ui-avatars.com'].indexOf(parsed.hostname.toLowerCase()) !== -1) return parsed.href;
+  } catch (e) {}
+  return '';
+}
+
+function mappingFallbackAvatar(label) {
+  return 'https://ui-avatars.com/api/?name=' + encodeURIComponent(mappingText(label).slice(0, 40) || 'ACE') + '&background=cbd5e1&color=334155';
+}
+
+function createMappingAvatar(id, source, label, className) {
+  var img = document.createElement('img');
+  img.className = className;
+  img.alt = 'รูปโปรไฟล์ ' + mappingText(label);
+  img.loading = 'lazy';
+  img.referrerPolicy = 'no-referrer';
+  img.setAttribute('data-tiktok-avatar', encodeURIComponent(mappingText(id)));
+  img.onerror = function() {
+    img.onerror = null;
+    img.src = mappingFallbackAvatar(label);
+  };
+  img.src = mappingImageSource(source) || mappingFallbackAvatar(label);
+  return img;
+}
+
+function createMappingCell(row, className, value) {
+  var cell = document.createElement('td');
+  cell.className = className || '';
+  if (value && value.nodeType) cell.appendChild(value);
+  else cell.textContent = mappingText(value) || '-';
+  row.appendChild(cell);
+  return cell;
+}
+
+function createMappingStatusBadge(isUpdated) {
+  var badge = document.createElement('span');
+  badge.className = isUpdated
+    ? 'px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 inline-flex items-center justify-center gap-1 shadow-sm'
+    : 'px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 inline-flex items-center justify-center gap-1';
+  badge.textContent = isUpdated ? '🟢 UPDATE' : '⚪ ไม่มีการอัปเดต';
+  return badge;
+}
+
+function createMappingProfileCell(item, isVj) {
+  var wrapper = document.createElement('div');
+  wrapper.className = 'flex items-center gap-2.5';
+  var displayName = isVj ? item.assignedVJ : item.userName;
+  var id = isVj ? item.vjTikTokId : item.tiktokId;
+  var src = isVj ? item.vjAvatar : item.userAvatar;
+  wrapper.appendChild(createMappingAvatar(id, src, displayName, isVj
+    ? 'w-6 h-6 rounded-full object-cover border border-purple-200'
+    : 'w-8 h-8 rounded-full object-cover border border-slate-200 shadow-sm'));
+  var name = document.createElement('span');
+  name.textContent = mappingText(displayName) || '-';
+  wrapper.appendChild(name);
+  return wrapper;
+}
+
+function createMappingLinkCell(item, compact) {
+  var url = mappingText(item.tiktokUrl).trim();
+  var cell = document.createElement('td');
+  cell.className = 'p-3';
+  try {
+    var parsed = new URL(url);
+    if (parsed.protocol === 'https:' && (parsed.hostname === 'tiktok.com' || parsed.hostname.endsWith('.tiktok.com'))) {
+      var link = document.createElement('a');
+      link.href = parsed.href;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.className = 'text-indigo-600 hover:underline font-medium';
+      link.textContent = compact ? '🔗 ลิงก์' : '🔗 เปิดลิงก์ TikTok';
+      cell.appendChild(link);
+      return cell;
+    }
+  } catch (e) {}
+  cell.textContent = '-';
+  return cell;
 }
 
 function loadMappingAvatarCache(items) {
@@ -3420,7 +3550,8 @@ function loadMappingAvatarCache(items) {
     document.querySelectorAll('img[data-tiktok-avatar]').forEach(function(img) {
       var key = '';
       try { key = decodeURIComponent(img.getAttribute('data-tiktok-avatar') || '').toLowerCase(); } catch (e) { return; }
-      if (avatarMap[key]) img.src = avatarMap[key];
+      var safeSource = mappingImageSource(avatarMap[key]);
+      if (safeSource) img.src = safeSource;
     });
   }
   function loadBatch(offset) {
@@ -3432,7 +3563,7 @@ function loadMappingAvatarCache(items) {
     }).withFailureHandler(function(err) {
       console.warn('โหลดภาพโปรไฟล์จาก cache ไม่สำเร็จ:', err);
       loadBatch(offset + 10);
-    }).getUserMappingAvatarData(batch, viewerName, viewerType);
+    }).getUserMappingAvatarData(batch, viewerName, viewerType, currentAdminToken || currentSessionToken, clientIpAddress);
   }
   loadBatch(0);
 }
@@ -3454,32 +3585,14 @@ function renderVJUserMapTable(list) {
   list.forEach(function(item) {
     var tr = document.createElement('tr');
     tr.className = item.isUpdatedToday ? "bg-emerald-50/40 hover:bg-emerald-50 transition" : "hover:bg-slate-50 transition";
-    
-    var urlLink = item.tiktokUrl ? '<a href="' + item.tiktokUrl + '" target="_blank" class="text-indigo-600 hover:underline font-medium">🔗 เปิดลิงก์ TikTok</a>' : '-';
-    
-    // สัญลักษณ์แสดงสถานะอัปเดต
-    var statusBadge = item.isUpdatedToday 
-      ? '<span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center justify-center gap-1 shadow-sm">🟢 UPDATE</span>'
-      : '<span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 flex items-center justify-center gap-1">⚪ ไม่มีการอัปเดต</span>';
-
-    tr.innerHTML = '<td class="p-3 text-center">' + statusBadge + '</td>' +
-      '<td class="p-3 font-mono font-bold text-slate-800">' + item.tiktokId + '</td>' +
-      '<td class="p-3 font-bold text-slate-700">' +
-        '<div class="flex items-center gap-2.5">' +
-          '<img src="' + item.userAvatar + '" data-tiktok-avatar="' + encodeURIComponent(item.tiktokId || '') + '" class="w-8 h-8 rounded-full object-cover border border-slate-200 shadow-sm" onerror="this.src=\'https://ui-avatars.com/api/?name=User&background=cbd5e1&color=fff\'">' +
-          '<span>' + item.userName + '</span>' +
-        '</div>' +
-      '</td>' +
-      '<td class="p-3">' + urlLink + '</td>' +
-      '<td class="p-3 font-bold text-purple-700">' +
-        '<div class="flex items-center gap-2">' +
-          '<img src="' + item.vjAvatar + '" data-tiktok-avatar="' + encodeURIComponent(item.vjTikTokId || '') + '" class="w-6 h-6 rounded-full object-cover border border-purple-200" onerror="this.style.display=\'none\'">' +
-          '<span>' + item.assignedVJ + '</span>' +
-        '</div>' +
-      '</td>' +
-      '<td class="p-3 font-semibold text-slate-600">' + (item.team || '-') + '</td>' +
-      '<td class="p-3 text-slate-500 font-mono text-[11px]">' + item.updatedDate + '</td>' +
-      '<td class="p-3 text-slate-500">' + item.recordedBy + '</td>';
+    createMappingCell(tr, 'p-3 text-center', createMappingStatusBadge(!!item.isUpdatedToday));
+    createMappingCell(tr, 'p-3 font-mono font-bold text-slate-800', item.tiktokId);
+    createMappingCell(tr, 'p-3 font-bold text-slate-700', createMappingProfileCell(item, false));
+    tr.appendChild(createMappingLinkCell(item, false));
+    createMappingCell(tr, 'p-3 font-bold text-purple-700', createMappingProfileCell(item, true));
+    createMappingCell(tr, 'p-3 font-semibold text-slate-600', item.team);
+    createMappingCell(tr, 'p-3 text-slate-500 font-mono text-[11px]', item.updatedDate);
+    createMappingCell(tr, 'p-3 text-slate-500', item.recordedBy);
     tbody.appendChild(tr);
   });
 }
@@ -3488,9 +3601,9 @@ function renderVJUserMapTable(list) {
 function filterVJUserMapTable() {
   var query = document.getElementById('vjSearchUserMap').value.toLowerCase();
   var filtered = cachedUserMapData.filter(function(item) {
-    return item.tiktokId.toLowerCase().indexOf(query) !== -1 ||
-           item.userName.toLowerCase().indexOf(query) !== -1 ||
-           item.team.toLowerCase().indexOf(query) !== -1;
+    return mappingText(item.tiktokId).toLowerCase().indexOf(query) !== -1 ||
+           mappingText(item.userName).toLowerCase().indexOf(query) !== -1 ||
+           mappingText(item.team).toLowerCase().indexOf(query) !== -1;
   });
   renderVJUserMapTable(filtered);
 }
@@ -3516,7 +3629,7 @@ function loadUserMappingForAdmin() {
       }
     })
     .withFailureHandler(function(err) { hideLoading(); showCustomAlert('โหลด User Mapping ไม่สำเร็จ: ' + (err && err.message ? err.message : err), 'เกิดข้อผิดพลาด'); })
-    .getUserMappingData(currentAdminUser, 'ADMIN');
+    .getUserMappingData(currentAdminUser, 'ADMIN', currentAdminToken, clientIpAddress);
 }
 
 // ------------------------------------------
@@ -3536,36 +3649,25 @@ function renderAdminUserMapTable(list) {
   list.forEach(function(item) {
     var tr = document.createElement('tr');
     tr.className = item.isUpdatedToday ? "bg-emerald-50/40 hover:bg-emerald-50 transition" : "hover:bg-slate-50 transition";
-    
-    var urlLink = item.tiktokUrl ? '<a href="' + item.tiktokUrl + '" target="_blank" class="text-indigo-600 hover:underline font-medium">🔗 ลิงก์</a>' : '-';
-    
-    // สัญลักษณ์แสดงสถานะอัปเดต
-    var statusBadge = item.isUpdatedToday 
-      ? '<span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center justify-center gap-1 shadow-sm">🟢 UPDATE</span>'
-      : '<span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 flex items-center justify-center gap-1">⚪ NO UPDATE</span>';
-
-    tr.innerHTML = '<td class="p-3 text-center">' + statusBadge + '</td>' +
-      '<td class="p-3 font-mono font-bold text-slate-800">' + item.tiktokId + '</td>' +
-      '<td class="p-3 font-bold text-slate-700">' +
-        '<div class="flex items-center gap-2.5">' +
-          '<img src="' + item.userAvatar + '" data-tiktok-avatar="' + encodeURIComponent(item.tiktokId || '') + '" class="w-8 h-8 rounded-full object-cover border border-slate-200 shadow-sm" onerror="this.src=\'https://ui-avatars.com/api/?name=User&background=cbd5e1&color=fff\'">' +
-          '<span>' + item.userName + '</span>' +
-        '</div>' +
-      '</td>' +
-      '<td class="p-3">' + urlLink + '</td>' +
-      '<td class="p-3 font-bold text-purple-700">' +
-        '<div class="flex items-center gap-2">' +
-          '<img src="' + item.vjAvatar + '" data-tiktok-avatar="' + encodeURIComponent(item.vjTikTokId || '') + '" class="w-6 h-6 rounded-full object-cover border border-purple-200" onerror="this.style.display=\'none\'">' +
-          '<span>' + item.assignedVJ + '</span>' +
-        '</div>' +
-      '</td>' +
-      '<td class="p-3 font-semibold text-slate-600">' + (item.team || '-') + '</td>' +
-      '<td class="p-3 text-slate-500 font-mono text-[11px]">' + item.updatedDate + '</td>' +
-      '<td class="p-3 text-slate-500">' + item.recordedBy + '</td>' +
-      '<td class="p-3 text-center flex items-center justify-center gap-2">' +
-        '<button onclick="editUserMapRow(' + JSON.stringify(item).replace(/"/g, '&quot;') + ')" class="text-teal-600 hover:text-teal-800 font-bold underline">แก้ไข</button>' +
-        '<button onclick="deleteUserMapRow(' + item.rowIndex + ')" class="text-rose-600 hover:text-rose-800 font-bold underline">ลบ</button>' +
-      '</td>';
+    createMappingCell(tr, 'p-3 text-center', createMappingStatusBadge(!!item.isUpdatedToday));
+    createMappingCell(tr, 'p-3 font-mono font-bold text-slate-800', item.tiktokId);
+    createMappingCell(tr, 'p-3 font-bold text-slate-700', createMappingProfileCell(item, false));
+    tr.appendChild(createMappingLinkCell(item, true));
+    createMappingCell(tr, 'p-3 font-bold text-purple-700', createMappingProfileCell(item, true));
+    createMappingCell(tr, 'p-3 font-semibold text-slate-600', item.team);
+    createMappingCell(tr, 'p-3 text-slate-500 font-mono text-[11px]', item.updatedDate);
+    createMappingCell(tr, 'p-3 text-slate-500', item.recordedBy);
+    var actions = document.createElement('td');
+    actions.className = 'p-3 text-center';
+    var actionWrap = document.createElement('div');
+    actionWrap.className = 'flex items-center justify-center gap-2';
+    var editButton = document.createElement('button');
+    editButton.type = 'button'; editButton.className = 'text-teal-600 hover:text-teal-800 font-bold underline';
+    editButton.textContent = 'แก้ไข'; editButton.addEventListener('click', function() { editUserMapRow(item); });
+    var deleteButton = document.createElement('button');
+    deleteButton.type = 'button'; deleteButton.className = 'text-rose-600 hover:text-rose-800 font-bold underline';
+    deleteButton.textContent = 'ลบ'; deleteButton.addEventListener('click', function() { deleteUserMapRow(item.rowIndex); });
+    actionWrap.appendChild(editButton); actionWrap.appendChild(deleteButton); actions.appendChild(actionWrap); tr.appendChild(actions);
     tbody.appendChild(tr);
   });
 }
@@ -3573,10 +3675,10 @@ function renderAdminUserMapTable(list) {
 function filterAdminUserMapTable() {
   var query = document.getElementById('admSearchUserMap').value.toLowerCase();
   var filtered = cachedUserMapData.filter(function(item) {
-    return item.tiktokId.toLowerCase().indexOf(query) !== -1 ||
-           item.userName.toLowerCase().indexOf(query) !== -1 ||
-           item.assignedVJ.toLowerCase().indexOf(query) !== -1 ||
-           item.team.toLowerCase().indexOf(query) !== -1;
+    return mappingText(item.tiktokId).toLowerCase().indexOf(query) !== -1 ||
+           mappingText(item.userName).toLowerCase().indexOf(query) !== -1 ||
+           mappingText(item.assignedVJ).toLowerCase().indexOf(query) !== -1 ||
+           mappingText(item.team).toLowerCase().indexOf(query) !== -1;
   });
   renderAdminUserMapTable(filtered);
 }
@@ -3655,7 +3757,7 @@ function submitSaveUserMapping() {
       tiktokUrl: tiktokUrl,
       assignedVJ: assignedVJ,
       team: team
-    }, currentAdminUser);
+    }, currentAdminUser, currentAdminToken, clientIpAddress);
 }
 
 function deleteUserMapRow(rowIndex) {
@@ -3671,7 +3773,7 @@ function deleteUserMapRow(rowIndex) {
         showCustomAlert(res.message, 'เกิดข้อผิดพลาด');
       }
     })
-    .deleteUserMappingRecord(rowIndex, currentAdminUser);
+    .deleteUserMappingRecord(rowIndex, currentAdminUser, currentAdminToken, clientIpAddress);
 }
 
     // Sidebar navigation mirrors the existing dashboard tabs and keeps their original handlers.

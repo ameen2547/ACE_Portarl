@@ -9,10 +9,10 @@ function doGet(e) {
     // to avoid unnecessary template evaluation inside the sandboxed iframe.
     return HtmlService.createHtmlOutputFromFile('index')
       .setTitle('ACE Content - ระบบตรวจสอบข้อมูล VJ/MC & Admin')
-      .addMetaTag('viewport', 'width=device-width, initial-scale=1.0')
-      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+      .addMetaTag('viewport', 'width=device-width, initial-scale=1.0');
   } catch (error) {
-    return HtmlService.createHtmlOutput('เกิดข้อผิดพลาดในการโหลดระบบ: ' + error.toString());
+    Logger.log('Web app rendering failed: ' + error.toString());
+    return HtmlService.createHtmlOutput('ไม่สามารถโหลดระบบได้ในขณะนี้ กรุณาติดต่อผู้ดูแลระบบ');
   }
 }
 
@@ -20,7 +20,7 @@ function doGet(e) {
 // 🚀 DYNAMIC SYSTEM VERSION & UPDATE RELEASE INFO
 // ------------------------------------------
 
-function getOrCreateSystemVersionSheet() {
+function getOrCreateSystemVersionSheet_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('System_Updates');
   if (!sheet) {
@@ -38,21 +38,24 @@ function getOrCreateSystemVersionSheet() {
 
 function getSystemVersionInfo() {
   try {
-    var sheet = getOrCreateSystemVersionSheet();
+    // Public read endpoint: do not create or modify sheets as a side effect.
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('System_Updates');
+    if (!sheet) throw new Error('System_Updates sheet does not exist');
     var data = sheet.getDataRange().getValues();
     if (data.length > 1) {
       var lastRow = data[data.length - 1];
-      var changelogText = cleanStr(lastRow[2]);
+      var changelogText = cleanStr_(lastRow[2]);
       var changelogArr = changelogText ? changelogText.split('\n').filter(function(line) { return line.trim() !== ''; }) : [];
       
       return {
         success: true,
-        version: cleanStr(lastRow[0]) || 'v2.6.0',
-        title: cleanStr(lastRow[1]) || 'ACE Content Portal - อัปเดตระบบ',
+        version: cleanStr_(lastRow[0]) || 'v2.6.0',
+        title: cleanStr_(lastRow[1]) || 'ACE Content Portal - อัปเดตระบบ',
         changelog: changelogArr,
         changelogRaw: changelogText,
-        updatedAt: lastRow[3] ? (lastRow[3] instanceof Date ? Utilities.formatDate(lastRow[3], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr(lastRow[3])) : '-',
-        updatedBy: cleanStr(lastRow[4]) || '-'
+        updatedAt: lastRow[3] ? (lastRow[3] instanceof Date ? Utilities.formatDate(lastRow[3], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr_(lastRow[3])) : '-',
+        updatedBy: cleanStr_(lastRow[4]) || '-'
       };
     }
   } catch (err) {
@@ -69,13 +72,16 @@ function getSystemVersionInfo() {
   };
 }
 
-function saveSystemVersionInfo(version, title, changelogText, adminName, ipAddress, deviceInfo) {
+function saveSystemVersionInfo(version, title, changelogText, adminName, ipAddress, deviceInfo, sessionToken) {
   try {
-    var sheet = getOrCreateSystemVersionSheet();
+    var auth = requireSession_(sessionToken, 'ADMIN', ipAddress);
+    if (!auth.success) return auth;
+    adminName = auth.session.userName;
+    var sheet = getOrCreateSystemVersionSheet_();
     var nowStr = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
-    var cleanVer = cleanStr(version);
-    var cleanTitleStr = cleanStr(title);
-    var cleanChangelog = cleanStr(changelogText);
+    var cleanVer = cleanStr_(version);
+    var cleanTitleStr = cleanStr_(title);
+    var cleanChangelog = cleanStr_(changelogText);
     var admin = adminName || 'Admin';
 
     if (!cleanVer || !cleanTitleStr) {
@@ -83,7 +89,7 @@ function saveSystemVersionInfo(version, title, changelogText, adminName, ipAddre
     }
 
     sheet.appendRow([cleanVer, cleanTitleStr, cleanChangelog, nowStr, admin]);
-    writeLog('ADMIN', admin, 'UPDATE_SYSTEM_VERSION', 'อัปเดตเวอร์ชันระบบเป็น ' + cleanVer + ' (' + cleanTitleStr + ')', ipAddress, deviceInfo);
+    writeLog_('ADMIN', admin, 'UPDATE_SYSTEM_VERSION', 'อัปเดตเวอร์ชันระบบเป็น ' + cleanVer + ' (' + cleanTitleStr + ')', ipAddress, deviceInfo);
 
     return { 
       success: true, 
@@ -91,7 +97,8 @@ function saveSystemVersionInfo(version, title, changelogText, adminName, ipAddre
       versionInfo: getSystemVersionInfo()
     };
   } catch (err) {
-    return { success: false, message: 'เกิดข้อผิดพลาดในการบันทึกเวอร์ชัน: ' + err.toString() };
+    Logger.log('System version update failed: ' + err.toString());
+    return { success: false, message: 'เกิดข้อผิดพลาดในการบันทึกเวอร์ชัน' };
   }
 }
 
@@ -99,14 +106,94 @@ function saveSystemVersionInfo(version, title, changelogText, adminName, ipAddre
 // 🛠️ Helper Functions & Logger
 // ------------------------------------------
 
-function cleanStr(text) {
+function cleanStr_(text) {
   if (text === null || text === undefined) return '';
   return String(text)
     .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '')
     .trim();
 }
 
-function parseDiamondVal(valStr) {
+function safeSheetText_(value) {
+  var text = cleanStr_(value);
+  return /^[=+\-@]/.test(text) ? "'" + text : text;
+}
+
+// Server-side bearer sessions keep PINs out of browser storage and out of
+// subsequent API calls. Cache entries expire automatically after six hours.
+var ACE_SESSION_TTL_SECONDS = 21600;
+var ACE_LOGIN_FAILURE_TTL_SECONDS = 900;
+var ACE_LOGIN_MAX_FAILURES = 8;
+
+function issueSession_(userType, userName) {
+  var token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  var session = {
+    userType: cleanStr_(userType).toUpperCase(),
+    userName: cleanStr_(userName),
+    issuedAt: Date.now()
+  };
+  CacheService.getScriptCache().put('ACE_SESSION_' + token, JSON.stringify(session), ACE_SESSION_TTL_SECONDS);
+  return token;
+}
+
+function readSession_(token, expectedType) {
+  var cleanToken = cleanStr_(token);
+  if (!/^[a-f0-9]{64}$/i.test(cleanToken)) return null;
+  var raw = CacheService.getScriptCache().get('ACE_SESSION_' + cleanToken);
+  if (!raw) return null;
+  try {
+    var session = JSON.parse(raw);
+    if (!session.userName || !session.userType) return null;
+    if (expectedType && session.userType !== cleanStr_(expectedType).toUpperCase()) return null;
+    return session;
+  } catch (err) {
+    return null;
+  }
+}
+
+function requireSession_(token, expectedType, ipAddress) {
+  var session = readSession_(token, expectedType);
+  if (!session) return { success: false, message: 'เซสชันหมดอายุหรือไม่มีสิทธิ์ กรุณาเข้าสู่ระบบใหม่' };
+  var permission = checkAccessPermission_(session.userName, ipAddress);
+  if (!permission.allowed) return { success: false, message: '⛔ ' + permission.reason };
+  return { success: true, session: session };
+}
+
+function loginFailureCacheKey_(userType, userName) {
+  var source = cleanStr_(userType).toUpperCase() + '|' + cleanStr_(userName).toLowerCase();
+  var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, source);
+  return 'ACE_LOGIN_FAIL_' + Utilities.base64EncodeWebSafe(digest).replace(/=+$/g, '').substring(0, 32);
+}
+
+function isLoginRateLimited_(userType, userName) {
+  var count = Number(CacheService.getScriptCache().get(loginFailureCacheKey_(userType, userName))) || 0;
+  return count >= ACE_LOGIN_MAX_FAILURES;
+}
+
+function recordLoginFailure_(userType, userName) {
+  var cache = CacheService.getScriptCache();
+  var key = loginFailureCacheKey_(userType, userName);
+  var lock = LockService.getScriptLock();
+  var acquired = false;
+  try {
+    acquired = lock.tryLock(1000);
+    var count = Number(cache.get(key)) || 0;
+    cache.put(key, String(Math.min(count + 1, ACE_LOGIN_MAX_FAILURES)), ACE_LOGIN_FAILURE_TTL_SECONDS);
+  } finally {
+    if (acquired) lock.releaseLock();
+  }
+}
+
+function clearLoginFailures_(userType, userName) {
+  CacheService.getScriptCache().remove(loginFailureCacheKey_(userType, userName));
+}
+
+function endSession(sessionToken) {
+  var token = cleanStr_(sessionToken);
+  if (/^[a-f0-9]{64}$/i.test(token)) CacheService.getScriptCache().remove('ACE_SESSION_' + token);
+  return { success: true };
+}
+
+function parseDiamondVal_(valStr) {
   if (valStr === null || valStr === undefined || valStr === '') return 0;
   if (typeof valStr === 'number') return valStr;
   var cleaned = String(valStr)
@@ -117,7 +204,7 @@ function parseDiamondVal(valStr) {
   return isNaN(num) ? 0 : num;
 }
 
-function writeLog(userType, userName, action, details, ipAddress, deviceInfo) {
+function writeLog_(userType, userName, action, details, ipAddress, deviceInfo) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var logSheet = ss.getSheetByName('Logs') || ss.getSheetByName('LOGS') || ss.getSheetByName('logs');
@@ -135,7 +222,7 @@ function writeLog(userType, userName, action, details, ipAddress, deviceInfo) {
   }
 }
 
-function getLogs(selectedMonth) {
+function getLogs_(selectedMonth) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var logSheet = ss.getSheetByName('Logs') || ss.getSheetByName('LOGS') || ss.getSheetByName('logs');
@@ -145,18 +232,18 @@ function getLogs(selectedMonth) {
     if (data.length <= 1) return { success: true, logs: [] };
 
     var logs = [];
-    var filterMonth = selectedMonth ? cleanStr(selectedMonth).toUpperCase() : '';
+    var filterMonth = selectedMonth ? cleanStr_(selectedMonth).toUpperCase() : '';
 
     for (var i = data.length - 1; i >= 1; i--) {
       var row = data[i];
-      var timestamp = row[0] ? (row[0] instanceof Date ? Utilities.formatDate(row[0], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr(row[0])) : '-';
-      var userType = cleanStr(row[1]);
-      var userName = cleanStr(row[2]);
-      var action = cleanStr(row[3]);
-      var details = cleanStr(row[4]);
-      var ipAddress = cleanStr(row[5]);
-      var deviceInfo = cleanStr(row[6]);
-      var monthYear = cleanStr(row[7]);
+      var timestamp = row[0] ? (row[0] instanceof Date ? Utilities.formatDate(row[0], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr_(row[0])) : '-';
+      var userType = cleanStr_(row[1]);
+      var userName = cleanStr_(row[2]);
+      var action = cleanStr_(row[3]);
+      var details = cleanStr_(row[4]);
+      var ipAddress = cleanStr_(row[5]);
+      var deviceInfo = cleanStr_(row[6]);
+      var monthYear = cleanStr_(row[7]);
 
       if (filterMonth && monthYear && monthYear.indexOf(filterMonth) === -1 && filterMonth.indexOf(monthYear) === -1) {
         continue;
@@ -184,7 +271,7 @@ function getLogs(selectedMonth) {
 // 🔒 ACCESS CONTROL & IP / USER LOCKING
 // ------------------------------------------
 
-function getOrCreateAccessControlSheet() {
+function getOrCreateAccessControlSheet_() {
   // Preserve any existing sheet schema. New sheets use the current eight-column layout.
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('Access_Control');
@@ -197,12 +284,12 @@ function getOrCreateAccessControlSheet() {
   return sheet;
 }
 
-function checkAccessPermission(userName, ipAddress) {
+function checkAccessPermission_(userName, ipAddress) {
   try {
-    var sheet = getOrCreateAccessControlSheet();
+    var sheet = getOrCreateAccessControlSheet_();
     var data = sheet.getDataRange().getValues();
     if (data.length <= 1) return { allowed: true };
-    var headers = data[0].map(function(h) { return cleanStr(h).toUpperCase().replace(/\s+/g, '_'); });
+    var headers = data[0].map(function(h) { return cleanStr_(h).toUpperCase().replace(/\s+/g, '_'); });
     function col(name, fallback) { var n = headers.indexOf(name); return n >= 0 ? n : fallback; }
     var typeIdx = col('TYPE', 1), targetIdx = col('TARGET', 2);
     var statusIdx = col('STATUS', headers.indexOf('TEAM') >= 0 ? 4 : 3);
@@ -210,13 +297,13 @@ function checkAccessPermission(userName, ipAddress) {
     var locked = Object.create(null);
     for (var i = 1; i < data.length; i++) {
       var row = data[i];
-      if (cleanStr(row[statusIdx]).toUpperCase() !== 'LOCKED') continue;
-      var type = cleanStr(row[typeIdx]).toUpperCase();
-      var target = cleanStr(row[targetIdx]).toLowerCase();
-      if ((type === 'USER' || type === 'IP') && target) locked[type + ':' + target] = cleanStr(row[reasonIdx]);
+      if (cleanStr_(row[statusIdx]).toUpperCase() !== 'LOCKED') continue;
+      var type = cleanStr_(row[typeIdx]).toUpperCase();
+      var target = cleanStr_(row[targetIdx]).toLowerCase();
+      if ((type === 'USER' || type === 'IP') && target) locked[type + ':' + target] = cleanStr_(row[reasonIdx]);
     }
-    var cleanUser = cleanStr(userName).toLowerCase();
-    var cleanIp = cleanStr(ipAddress).toLowerCase();
+    var cleanUser = cleanStr_(userName).toLowerCase();
+    var cleanIp = cleanStr_(ipAddress).toLowerCase();
     if (cleanUser && Object.prototype.hasOwnProperty.call(locked, 'USER:' + cleanUser)) {
       return { allowed: false, reason: 'บัญชี VJ/User (' + userName + ') ถูกล็อกการใช้งาน: ' + (locked['USER:' + cleanUser] || 'โปรดติดต่อ Admin') };
     }
@@ -226,65 +313,70 @@ function checkAccessPermission(userName, ipAddress) {
     return { allowed: true };
   } catch (err) {
     Logger.log('Access check error: ' + err.toString());
-    return { allowed: true };
+    return { allowed: false, reason: 'ไม่สามารถตรวจสอบสิทธิ์ได้ในขณะนี้ กรุณาลองใหม่ภายหลัง' };
   }
 }
 
-function getAccessControlList() {
+function getAccessControlList_() {
   try {
-    var sheet = getOrCreateAccessControlSheet();
+    var sheet = getOrCreateAccessControlSheet_();
     var data = sheet.getDataRange().getValues();
     var list = [];
     if (!data.length) return { success: true, list: list };
-    var headers = data[0].map(function(h) { return cleanStr(h).toUpperCase().replace(/\s+/g, '_'); });
+    var headers = data[0].map(function(h) { return cleanStr_(h).toUpperCase().replace(/\s+/g, '_'); });
     function col(name, fallback) { var n = headers.indexOf(name); return n >= 0 ? n : fallback; }
     var teamIdx = col('TEAM', -1), statusIdx = col('STATUS', teamIdx >= 0 ? 4 : 3);
     var reasonIdx = col('REASON', teamIdx >= 0 ? 5 : 4);
     var byIdx = col('UPDATED_BY', teamIdx >= 0 ? 6 : 5), atIdx = col('UPDATED_AT', teamIdx >= 0 ? 7 : 6);
     for (var i = 1; i < data.length; i++) {
-      list.push({ id: cleanStr(data[i][col('ID', 0)]), type: cleanStr(data[i][col('TYPE', 1)]), target: cleanStr(data[i][col('TARGET', 2)]),
-        team: teamIdx >= 0 ? (cleanStr(data[i][teamIdx]) || 'ไม่ระบุทีม') : 'ไม่ระบุทีม', status: cleanStr(data[i][statusIdx]), reason: cleanStr(data[i][reasonIdx]),
-        updatedBy: cleanStr(data[i][byIdx]), updatedAt: data[i][atIdx] ? (data[i][atIdx] instanceof Date ? Utilities.formatDate(data[i][atIdx], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr(data[i][atIdx])) : '-' });
+      list.push({ id: cleanStr_(data[i][col('ID', 0)]), type: cleanStr_(data[i][col('TYPE', 1)]), target: cleanStr_(data[i][col('TARGET', 2)]),
+        team: teamIdx >= 0 ? (cleanStr_(data[i][teamIdx]) || 'ไม่ระบุทีม') : 'ไม่ระบุทีม', status: cleanStr_(data[i][statusIdx]), reason: cleanStr_(data[i][reasonIdx]),
+        updatedBy: cleanStr_(data[i][byIdx]), updatedAt: data[i][atIdx] ? (data[i][atIdx] instanceof Date ? Utilities.formatDate(data[i][atIdx], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr_(data[i][atIdx])) : '-' });
     }
     return { success: true, list: list };
   } catch (err) { return { success: false, message: err.toString() }; }
 }
 
-function updateAccessRule(type, target, team, status, reason, adminName, ipAddress, deviceInfo) {
+function updateAccessRule(type, target, team, status, reason, adminName, ipAddress, deviceInfo, sessionToken) {
   try {
-    var sheet = getOrCreateAccessControlSheet();
+    var auth = requireSession_(sessionToken, 'ADMIN', ipAddress);
+    if (!auth.success) return auth;
+    adminName = auth.session.userName;
+    var sheet = getOrCreateAccessControlSheet_();
     var data = sheet.getDataRange().getValues();
-    var headers = (data[0] || []).map(function(h) { return cleanStr(h).toUpperCase().replace(/\s+/g, '_'); });
+    var headers = (data[0] || []).map(function(h) { return cleanStr_(h).toUpperCase().replace(/\s+/g, '_'); });
     function col(name, fallback) { var n = headers.indexOf(name); return n >= 0 ? n : fallback; }
     var teamIdx = col('TEAM', -1), typeIdx = col('TYPE', 1), targetIdx = col('TARGET', 2);
     var statusIdx = col('STATUS', teamIdx >= 0 ? 4 : 3), reasonIdx = col('REASON', teamIdx >= 0 ? 5 : 4);
     var byIdx = col('UPDATED_BY', teamIdx >= 0 ? 6 : 5), atIdx = col('UPDATED_AT', teamIdx >= 0 ? 7 : 6);
-    var cleanType = cleanStr(type).toUpperCase(), cleanTarget = cleanStr(target), cleanTeam = cleanStr(team) || 'ไม่ระบุทีม';
-    var cleanStatus = cleanStr(status).toUpperCase(), nowStr = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
+    var cleanType = cleanStr_(type).toUpperCase(), cleanTarget = cleanStr_(target), cleanTeam = cleanStr_(team) || 'ไม่ระบุทีม';
+    var cleanStatus = cleanStr_(status).toUpperCase(), nowStr = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
+    if (cleanType !== 'USER' && cleanType !== 'IP') return { success: false, message: 'ประเภทการล็อกไม่ถูกต้อง' };
+    if (cleanStatus !== 'LOCKED' && cleanStatus !== 'ACTIVE' && cleanStatus !== 'UNLOCKED') return { success: false, message: 'สถานะการล็อกไม่ถูกต้อง' };
     if (!cleanTarget) return { success: false, message: 'โปรดระบุชื่อ User หรือ IP ที่ต้องการตั้งค่า' };
     var targetRow = -1;
-    for (var i = 1; i < data.length; i++) if (cleanStr(data[i][typeIdx]).toUpperCase() === cleanType && cleanStr(data[i][targetIdx]).toLowerCase() === cleanTarget.toLowerCase()) { targetRow = i + 1; break; }
+    for (var i = 1; i < data.length; i++) if (cleanStr_(data[i][typeIdx]).toUpperCase() === cleanType && cleanStr_(data[i][targetIdx]).toLowerCase() === cleanTarget.toLowerCase()) { targetRow = i + 1; break; }
     if (targetRow > 1) {
       if (teamIdx >= 0) sheet.getRange(targetRow, teamIdx + 1).setValue(cleanTeam);
       sheet.getRange(targetRow, statusIdx + 1).setValue(cleanStatus);
-      sheet.getRange(targetRow, reasonIdx + 1).setValue(cleanStr(reason));
+      sheet.getRange(targetRow, reasonIdx + 1).setValue(cleanStr_(reason));
       sheet.getRange(targetRow, byIdx + 1).setValue(adminName || 'Admin');
       sheet.getRange(targetRow, atIdx + 1).setValue(nowStr);
     } else {
       var newRow = new Array(Math.max(headers.length, 1)).fill('');
       newRow[col('ID', 0)] = 'ACC_' + new Date().getTime(); newRow[typeIdx] = cleanType; newRow[targetIdx] = cleanTarget;
       if (teamIdx >= 0) newRow[teamIdx] = cleanTeam;
-      newRow[statusIdx] = cleanStatus; newRow[reasonIdx] = cleanStr(reason); newRow[byIdx] = adminName || 'Admin'; newRow[atIdx] = nowStr;
+      newRow[statusIdx] = cleanStatus; newRow[reasonIdx] = cleanStr_(reason); newRow[byIdx] = adminName || 'Admin'; newRow[atIdx] = nowStr;
       sheet.appendRow(newRow);
     }
     var actText = cleanStatus === 'LOCKED' ? 'LOCK_ACCESS' : 'UNLOCK_ACCESS';
-    writeLog('ADMIN', adminName, actText, 'ตั้งค่าการเข้าถึง ' + cleanType + ': ' + cleanTarget + ' (ทีม: ' + cleanTeam + ') -> ' + cleanStatus + ' (เหตุผล: ' + (reason || '-') + ')', ipAddress, deviceInfo);
+    writeLog_('ADMIN', adminName, actText, 'ตั้งค่าการเข้าถึง ' + cleanType + ': ' + cleanTarget + ' (ทีม: ' + cleanTeam + ') -> ' + cleanStatus + ' (เหตุผล: ' + (reason || '-') + ')', ipAddress, deviceInfo);
     return { success: true, message: (cleanStatus === 'LOCKED' ? '🔒 ล็อกสิทธิ์การใช้งานเรียบร้อยแล้ว' : '🔓 ปลดล็อกการใช้งานเรียบร้อยแล้ว') };
   } catch (err) { return { success: false, message: err.toString() }; }
 }
 
-function getProfilePicUrl(tiktokVal, stageName) {
-  var cleanedVal = cleanStr(tiktokVal);
+function getProfilePicUrl_(tiktokVal, stageName) {
+  var cleanedVal = cleanStr_(tiktokVal);
   if (!cleanedVal) {
     return 'https://ui-avatars.com/api/?name=' + encodeURIComponent(stageName || 'VJ') + '&background=6366f1&color=fff&bold=true';
   }
@@ -295,7 +387,7 @@ function getProfilePicUrl(tiktokVal, stageName) {
   return 'https://unavatar.io/tiktok/' + encodeURIComponent(cleanUser);
 }
 
-function getAvailableMonths(spreadsheet) {
+function getAvailableMonths_(spreadsheet) {
   try {
     var ss = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
     var sheets = ss.getSheets();
@@ -318,7 +410,7 @@ function getAvailableMonths(spreadsheet) {
   }
 }
 
-function getKPIMap(selectedMonth, spreadsheet) {
+function getKPIMap_(selectedMonth, spreadsheet) {
   var kpiMap = {};
   try {
     var ss = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
@@ -332,18 +424,18 @@ function getKPIMap(selectedMonth, spreadsheet) {
     var nameIdx = 0, targetIdx = 1, monthIdx = 2;
 
     for (var c = 0; c < hRow.length; c++) {
-      var h = cleanStr(hRow[c]).toUpperCase();
+      var h = cleanStr_(hRow[c]).toUpperCase();
       if (h.indexOf('VJ') !== -1 || h.indexOf('NAME') !== -1) nameIdx = c;
       if (h.indexOf('TARGET') !== -1) targetIdx = c;
       if (h.indexOf('MONTH') !== -1) monthIdx = c;
     }
 
-    var cleanSelectedMonth = cleanStr(selectedMonth).toUpperCase();
+    var cleanSelectedMonth = cleanStr_(selectedMonth).toUpperCase();
 
     for (var i = 1; i < data.length; i++) {
-      var vjName = cleanStr(data[i][nameIdx]).toLowerCase();
-      var targetVal = parseDiamondVal(data[i][targetIdx]);
-      var monthVal = cleanStr(data[i][monthIdx]).toUpperCase();
+      var vjName = cleanStr_(data[i][nameIdx]).toLowerCase();
+      var targetVal = parseDiamondVal_(data[i][targetIdx]);
+      var monthVal = cleanStr_(data[i][monthIdx]).toUpperCase();
 
       if (vjName && (monthVal === cleanSelectedMonth || cleanSelectedMonth.indexOf(monthVal) !== -1 || monthVal.indexOf(cleanSelectedMonth) !== -1)) {
         kpiMap[vjName] = targetVal;
@@ -359,7 +451,7 @@ function getKPIMap(selectedMonth, spreadsheet) {
 // 👤 VJ & Admin User Listing
 // ------------------------------------------
 
-function getVJListForLogin(spreadsheet) {
+function getVJListForLogin_(spreadsheet) {
   try {
     // This is the bound ACE workbook. Keep the spreadsheet reference local to this request.
     var ss = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
@@ -375,9 +467,8 @@ function getVJListForLogin(spreadsheet) {
     for (var r = 0; r < scanRows; r++) {
       var score = 0;
       for (var c = 0; c < vjValues[r].length; c++) {
-        var h = cleanStr(vjValues[r][c]).toUpperCase().replace(/[\s_-]+/g, '');
+        var h = cleanStr_(vjValues[r][c]).toUpperCase().replace(/[\s_-]+/g, '');
         if (h === 'STGENAME' || h === 'STAGENAME' || h === 'ชื่อการแสดง') score += 3;
-        if (h === 'NAME' || h === 'FULLNAME' || h === 'ชื่อ') score += 1;
         if (h === 'TEAM' || h === 'ทีม') score += 1;
         if (h === 'ROLE' || h === 'ตำแหน่ง') score += 1;
       }
@@ -386,25 +477,24 @@ function getVJListForLogin(spreadsheet) {
     if (headerRow < 0) headerRow = Math.min(1, vjValues.length - 1);
 
     var headers = vjValues[headerRow] || [];
-    var stageIdx = 1, nameIdx = 0, teamIdx = 2, roleIdx = 3;
+    var stageIdx = 1, teamIdx = 2, roleIdx = 3;
     for (var c = 0; c < headers.length; c++) {
-      var hStr = cleanStr(headers[c]).toUpperCase().replace(/[\s_-]+/g, '');
+      var hStr = cleanStr_(headers[c]).toUpperCase().replace(/[\s_-]+/g, '');
       if (hStr === 'STGENAME' || hStr === 'STAGENAME' || hStr === 'ชื่อการแสดง') stageIdx = c;
-      else if (hStr === 'NAME' || hStr === 'FULLNAME' || hStr === 'ชื่อ') nameIdx = c;
       else if (hStr === 'TEAM' || hStr === 'ทีม') teamIdx = c;
       else if (hStr === 'ROLE' || hStr === 'ตำแหน่ง') roleIdx = c;
     }
 
     var seen = Object.create(null);
     for (var i = headerRow + 1; i < vjValues.length; i++) {
-      var stageName = cleanStr(vjValues[i][stageIdx]);
-      var fullName = cleanStr(vjValues[i][nameIdx]);
-      var team = cleanStr(vjValues[i][teamIdx]);
-      var role = cleanStr(vjValues[i][roleIdx]);
+      var stageName = cleanStr_(vjValues[i][stageIdx]);
+      var team = cleanStr_(vjValues[i][teamIdx]);
+      var role = cleanStr_(vjValues[i][roleIdx]);
       var key = stageName.toLowerCase();
       if (stageName && !seen[key]) {
         seen[key] = true;
-        vjList.push({ stageName: stageName, fullName: fullName || stageName, role: role || '-', team: team || '-' });
+        // Public login bootstrap needs only the fields shown in the picker.
+        vjList.push({ stageName: stageName, role: role || '-', team: team || '-' });
       }
     }
     return { success: true, vjList: vjList };
@@ -414,7 +504,7 @@ function getVJListForLogin(spreadsheet) {
   }
 }
 
-function getAdminNames(spreadsheet) {
+function getAdminNames_(spreadsheet) {
   try {
     var ss = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
     var adminSheet = ss.getSheetByName('Admins') || ss.getSheetByName('admins') || ss.getSheetByName('ADMINS');
@@ -424,23 +514,21 @@ function getAdminNames(spreadsheet) {
       var hRow = adminValues[0] || [];
       var nameIdx = 0;
       for (var c = 0; c < hRow.length; c++) {
-        var hStr = cleanStr(hRow[c]).toUpperCase();
+        var hStr = cleanStr_(hRow[c]).toUpperCase();
         if (hStr === 'NAME' || hStr === 'ADMIN NAME' || hStr === 'ADMIN' || hStr === 'USERNAME' || hStr === 'ชื่อ') {
           nameIdx = c;
           break;
         }
       }
       for (var i = 1; i < adminValues.length; i++) {
-        var aName = cleanStr(adminValues[i][nameIdx]);
+        var aName = cleanStr_(adminValues[i][nameIdx]);
         if (aName) adminList.push(aName);
       }
     }
-    if (adminList.length === 0) {
-      adminList = ['Admin01', 'Admin02', 'SuperAdmin'];
-    }
     return { success: true, adminList: adminList };
   } catch (err) {
-    return { success: true, adminList: ['Admin01', 'SuperAdmin'] };
+    Logger.log('Error loading admin names: ' + err.toString());
+    return { success: false, adminList: [], message: 'โหลดรายชื่อ Admin ไม่สำเร็จ' };
   }
 }
 
@@ -449,9 +537,9 @@ function getLoginBootstrapData() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   return {
     success: true,
-    months: getAvailableMonths(ss),
-    vj: getVJListForLogin(ss),
-    admins: getAdminNames(ss)
+    months: getAvailableMonths_(ss),
+    vj: getVJListForLogin_(ss),
+    admins: getAdminNames_(ss)
   };
 }
 
@@ -459,7 +547,7 @@ function getLoginBootstrapData() {
 // 📢 ANNOUNCEMENTS MODULE
 // ------------------------------------------
 
-function getOrCreateAnnouncementSheets() {
+function getOrCreateAnnouncementSheets_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var annSheet = ss.getSheetByName('Announcements');
   if (!annSheet) {
@@ -478,7 +566,7 @@ function getOrCreateAnnouncementSheets() {
   return { annSheet: annSheet, readSheet: readSheet };
 }
 
-function getAnnouncementSchedule(announcementId, allProperties) {
+function getAnnouncementSchedule_(announcementId, allProperties) {
   try {
     var properties = allProperties || PropertiesService.getScriptProperties().getProperties();
     var raw = properties['ACE_ANN_SCHEDULE_' + announcementId];
@@ -488,10 +576,10 @@ function getAnnouncementSchedule(announcementId, allProperties) {
   }
 }
 
-function parseAnnouncementDateTime(value) {
+function parseAnnouncementDateTime_(value) {
   if (!value) return '';
   if (value instanceof Date && !isNaN(value.getTime())) return value;
-  var text = cleanStr(value).replace('T', ' ');
+  var text = cleanStr_(value).replace('T', ' ');
   if (!text) return '';
   try {
     return Utilities.parseDate(text, 'Asia/Bangkok', text.length === 16 ? 'yyyy-MM-dd HH:mm' : 'yyyy-MM-dd HH:mm:ss');
@@ -500,55 +588,32 @@ function parseAnnouncementDateTime(value) {
   }
 }
 
-function createAnnouncement(data, adminName, ipAddress, deviceInfo, adminPin) {
+function createAnnouncement(data, adminName, ipAddress, deviceInfo, sessionToken) {
   try {
-    var permission = checkAccessPermission(adminName, ipAddress);
-    if (!permission.allowed) {
-      writeLog('ADMIN', adminName, 'ACCESS_BLOCKED', permission.reason, ipAddress, deviceInfo);
-      return { success: false, message: '⛔ ' + permission.reason };
-    }
+    var auth = requireSession_(sessionToken, 'ADMIN', ipAddress);
+    if (!auth.success) return auth;
+    adminName = auth.session.userName;
+    if (!data || typeof data !== 'object') return { success: false, message: 'ข้อมูลประกาศไม่ถูกต้อง' };
+    if (cleanStr_(data.title).length > 200 || cleanStr_(data.content).length > 5000) return { success: false, message: 'หัวข้อหรือเนื้อหาประกาศยาวเกินกำหนด' };
 
-    var activeSs = SpreadsheetApp.getActiveSpreadsheet();
-    var adminSheet = activeSs.getSheetByName('Admins') || activeSs.getSheetByName('admins') || activeSs.getSheetByName('ADMINS');
-    var cleanAdminName = cleanStr(adminName).toLowerCase();
-    var cleanAdminPin = cleanStr(adminPin);
-    var adminAuthenticated = false;
-    if (adminSheet) {
-      var adminData = adminSheet.getDataRange().getValues();
-      var headers = adminData[0] || [];
-      var nameColumn = 0, pinColumn = 1;
-      for (var h = 0; h < headers.length; h++) {
-        var header = cleanStr(headers[h]).toUpperCase();
-        if (header === 'NAME' || header === 'ADMIN NAME' || header === 'ADMIN' || header === 'USERNAME' || header === 'ชื่อ') nameColumn = h;
-        if (header === 'PIN' || header === 'PASSWORD' || header === 'PASSCODE' || header === 'รหัสผ่าน') pinColumn = h;
-      }
-      for (var a = 1; a < adminData.length; a++) {
-        if (cleanStr(adminData[a][nameColumn]).toLowerCase() === cleanAdminName && cleanStr(adminData[a][pinColumn]) === cleanAdminPin) { adminAuthenticated = true; break; }
-      }
-    }
-    if (!adminAuthenticated && (cleanAdminPin.toUpperCase() === 'ADMIN123' || cleanAdminPin === '1234')) adminAuthenticated = true;
-    if (!adminAuthenticated) {
-      writeLog('ADMIN', adminName, 'CREATE_ANNOUNCEMENT_DENIED', 'ยืนยันบัญชีหรือ PIN ไม่สำเร็จ', ipAddress, deviceInfo);
-      return { success: false, message: '🔒 ไม่สามารถยืนยันสิทธิ์ Admin ได้ กรุณาเข้าสู่ระบบใหม่' };
-    }
-
-    var sheets = getOrCreateAnnouncementSheets();
+    var sheets = getOrCreateAnnouncementSheets_();
     var id = 'ANN_' + new Date().getTime();
     var now = new Date();
     var nowStr = Utilities.formatDate(now, 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
     var monthYearStr = Utilities.formatDate(now, 'Asia/Bangkok', 'MMMM yyyy').toUpperCase();
 
-    var startsAt = parseAnnouncementDateTime(data.startsAt);
-    var endsAt = parseAnnouncementDateTime(data.endsAt);
+    var startsAt = parseAnnouncementDateTime_(data.startsAt);
+    var endsAt = parseAnnouncementDateTime_(data.endsAt);
     if (startsAt && endsAt && endsAt.getTime() <= startsAt.getTime()) {
       throw new Error('เวลาปิดประกาศต้องอยู่หลังเวลาเริ่มประกาศ');
     }
 
-    var imageUrl = cleanStr(data.imageUrl);
+    var imageUrl = cleanStr_(data.imageUrl);
     if (imageUrl && !/^https:\/\//i.test(imageUrl)) throw new Error('ลิงก์รูปภาพต้องขึ้นต้นด้วย https://');
     if (data.imageBase64 && data.imageBase64.indexOf('data:image') === 0) {
       try {
-        var imageParts = data.imageBase64.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+        if (data.imageBase64.length > 6000000) throw new Error('ไฟล์ภาพต้องมีขนาดไม่เกิน 4 MB');
+        var imageParts = data.imageBase64.match(/^data:(image\/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/=]+)$/i);
         if (!imageParts) throw new Error('ไฟล์รูปภาพไม่ถูกต้อง');
         var folderSearch = DriveApp.getFoldersByName('Announcement_Images');
         var targetFolder = folderSearch.hasNext() ? folderSearch.next() : DriveApp.createFolder('Announcement_Images');
@@ -567,8 +632,8 @@ function createAnnouncement(data, adminName, ipAddress, deviceInfo, adminPin) {
       id,
       nowStr,
       monthYearStr,
-      cleanStr(data.title),
-      cleanStr(data.content),
+      cleanStr_(data.title),
+      cleanStr_(data.content),
       imageUrl,
       data.isImportant ? 'YES' : 'NO',
       data.requireAck ? 'YES' : 'NO',
@@ -582,28 +647,28 @@ function createAnnouncement(data, adminName, ipAddress, deviceInfo, adminPin) {
       }));
     }
 
-    writeLog('ADMIN', adminName, 'CREATE_ANNOUNCEMENT', 'สร้างประกาศข่าวสาร: ' + data.title, ipAddress, deviceInfo);
+    writeLog_('ADMIN', adminName, 'CREATE_ANNOUNCEMENT', 'สร้างประกาศข่าวสาร: ' + data.title, ipAddress, deviceInfo);
     return { success: true, id: id, message: 'สร้างประกาศข่าวสารเรียบร้อยแล้ว' };
   } catch (err) {
     return { success: false, message: err.toString() };
   }
 }
 
-function getActiveAnnouncements(userName, userType) {
+function getActiveAnnouncements_(userName, userType) {
   try {
-    var sheets = getOrCreateAnnouncementSheets();
+    var sheets = getOrCreateAnnouncementSheets_();
     var annData = sheets.annSheet.getDataRange().getValues();
     if (annData.length <= 1) return { success: true, list: [] };
 
     var readsData = sheets.readSheet.getDataRange().getValues();
     var readMap = Object.create(null);
     for (var r = 1; r < readsData.length; r++) {
-      if (cleanStr(readsData[r][2]).toLowerCase() === cleanStr(userName).toLowerCase()) {
-        var aId = cleanStr(readsData[r][1]);
-        var readKey = aId + '|' + (cleanStr(readsData[r][3]).toUpperCase() || 'VJ');
+      if (cleanStr_(readsData[r][2]).toLowerCase() === cleanStr_(userName).toLowerCase()) {
+        var aId = cleanStr_(readsData[r][1]);
+        var readKey = aId + '|' + (cleanStr_(readsData[r][3]).toUpperCase() || 'VJ');
         readMap[readKey] = {
           read: true,
-          acknowledged: cleanStr(readsData[r][5]) === 'YES'
+          acknowledged: cleanStr_(readsData[r][5]) === 'YES'
         };
       }
     }
@@ -613,27 +678,27 @@ function getActiveAnnouncements(userName, userType) {
     var scheduleProperties = PropertiesService.getScriptProperties().getProperties();
     for (var i = annData.length - 1; i >= 1; i--) {
       var row = annData[i];
-      if (cleanStr(row[9]) !== 'ACTIVE') continue;
-      var annId = cleanStr(row[0]);
-      var schedule = getAnnouncementSchedule(annId, scheduleProperties);
+      if (cleanStr_(row[9]) !== 'ACTIVE') continue;
+      var annId = cleanStr_(row[0]);
+      var schedule = getAnnouncementSchedule_(annId, scheduleProperties);
       var startAt = Number(schedule.startsAt) || 0;
       var endAt = Number(schedule.endsAt) || 0;
       if (startAt && startAt > now.getTime()) continue;
       if (endAt && endAt <= now.getTime()) continue;
-      var userReadInfo = readMap[annId + '|' + cleanStr(userType || 'VJ').toUpperCase()] || { read: false, acknowledged: false };
+      var userReadInfo = readMap[annId + '|' + cleanStr_(userType || 'VJ').toUpperCase()] || { read: false, acknowledged: false };
 
       list.push({
         id: annId,
-        timestamp: row[1] instanceof Date ? Utilities.formatDate(row[1], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr(row[1]),
-        monthYear: cleanStr(row[2]),
-        title: cleanStr(row[3]),
-        content: cleanStr(row[4]),
-        imageUrl: cleanStr(row[5]),
+        timestamp: row[1] instanceof Date ? Utilities.formatDate(row[1], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr_(row[1]),
+        monthYear: cleanStr_(row[2]),
+        title: cleanStr_(row[3]),
+        content: cleanStr_(row[4]),
+        imageUrl: cleanStr_(row[5]),
         startsAt: startAt ? Utilities.formatDate(new Date(startAt), 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm") : '',
         endsAt: endAt ? Utilities.formatDate(new Date(endAt), 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm") : '',
-        isImportant: cleanStr(row[6]) === 'YES',
-        requireAck: cleanStr(row[7]) === 'YES',
-        createdBy: cleanStr(row[8]),
+        isImportant: cleanStr_(row[6]) === 'YES',
+        requireAck: cleanStr_(row[7]) === 'YES',
+        createdBy: cleanStr_(row[8]),
         isRead: userReadInfo.read,
         isAcknowledged: userReadInfo.acknowledged
       });
@@ -644,9 +709,16 @@ function getActiveAnnouncements(userName, userType) {
   }
 }
 
-function recordAnnouncementRead(announcementId, userName, userType, acknowledged) {
+function recordAnnouncementRead(announcementId, userName, userType, acknowledged, sessionToken, ipAddress) {
   try {
-    var sheets = getOrCreateAnnouncementSheets();
+    var auth = requireSession_(sessionToken, null, ipAddress);
+    if (!auth.success) return auth;
+    if (auth.session.userType !== 'ADMIN' && auth.session.userType !== 'VJ') return { success: false, message: 'ไม่มีสิทธิ์บันทึกการรับทราบ' };
+    userName = auth.session.userName;
+    userType = auth.session.userType;
+    announcementId = cleanStr_(announcementId);
+    if (!announcementId) return { success: false, message: 'ไม่พบรายการประกาศ' };
+    var sheets = getOrCreateAnnouncementSheets_();
     var now = new Date();
     var nowStr = Utilities.formatDate(now, 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
     var monthYearStr = Utilities.formatDate(now, 'Asia/Bangkok', 'MMMM yyyy').toUpperCase();
@@ -654,8 +726,8 @@ function recordAnnouncementRead(announcementId, userName, userType, acknowledged
     var readsData = sheets.readSheet.getDataRange().getValues();
     var targetRow = -1;
     for (var i = 1; i < readsData.length; i++) {
-      var existingUserType = cleanStr(readsData[i][3]).toUpperCase() || 'VJ';
-      if (cleanStr(readsData[i][1]) === announcementId && cleanStr(readsData[i][2]).toLowerCase() === cleanStr(userName).toLowerCase() && existingUserType === cleanStr(userType || 'VJ').toUpperCase()) {
+      var existingUserType = cleanStr_(readsData[i][3]).toUpperCase() || 'VJ';
+      if (cleanStr_(readsData[i][1]) === announcementId && cleanStr_(readsData[i][2]).toLowerCase() === cleanStr_(userName).toLowerCase() && existingUserType === cleanStr_(userType || 'VJ').toUpperCase()) {
         targetRow = i + 1;
         break;
       }
@@ -684,9 +756,9 @@ function recordAnnouncementRead(announcementId, userName, userType, acknowledged
   }
 }
 
-function getAnnouncementStats() {
+function getAnnouncementStats_() {
   try {
-    var sheets = getOrCreateAnnouncementSheets();
+    var sheets = getOrCreateAnnouncementSheets_();
     var annData = sheets.annSheet.getDataRange().getValues();
     var readData = sheets.readSheet.getDataRange().getValues();
 
@@ -694,13 +766,13 @@ function getAnnouncementStats() {
 
     var readsByAnn = {};
     for (var r = 1; r < readData.length; r++) {
-      var annId = cleanStr(readData[r][1]);
+      var annId = cleanStr_(readData[r][1]);
       if (!readsByAnn[annId]) readsByAnn[annId] = [];
       readsByAnn[annId].push({
-        userName: cleanStr(readData[r][2]),
-        userType: cleanStr(readData[r][3]),
-        timestamp: readData[r][4] instanceof Date ? Utilities.formatDate(readData[r][4], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr(readData[r][4]),
-        acknowledged: cleanStr(readData[r][5]) === 'YES'
+        userName: cleanStr_(readData[r][2]),
+        userType: cleanStr_(readData[r][3]),
+        timestamp: readData[r][4] instanceof Date ? Utilities.formatDate(readData[r][4], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr_(readData[r][4]),
+        acknowledged: cleanStr_(readData[r][5]) === 'YES'
       });
     }
 
@@ -710,12 +782,12 @@ function getAnnouncementStats() {
 
     for (var i = annData.length - 1; i >= 1; i--) {
       var row = annData[i];
-      var id = cleanStr(row[0]);
-      var schedule = getAnnouncementSchedule(id, scheduleProperties);
+      var id = cleanStr_(row[0]);
+      var schedule = getAnnouncementSchedule_(id, scheduleProperties);
       var nowMs = Date.now();
       var startsAtMs = Number(schedule.startsAt) || 0;
       var endsAtMs = Number(schedule.endsAt) || 0;
-      var effectiveStatus = endsAtMs && endsAtMs <= nowMs ? 'EXPIRED' : (startsAtMs && startsAtMs > nowMs ? 'SCHEDULED' : cleanStr(row[9]));
+      var effectiveStatus = endsAtMs && endsAtMs <= nowMs ? 'EXPIRED' : (startsAtMs && startsAtMs > nowMs ? 'SCHEDULED' : cleanStr_(row[9]));
       var reads = readsByAnn[id] || [];
       var viewCount = reads.length;
       var ackCount = reads.filter(function(m) { return m.acknowledged; }).length;
@@ -723,16 +795,16 @@ function getAnnouncementStats() {
 
       stats.push({
         id: id,
-        timestamp: row[1] instanceof Date ? Utilities.formatDate(row[1], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr(row[1]),
-        monthYear: cleanStr(row[2]),
-        title: cleanStr(row[3]),
-        content: cleanStr(row[4]),
-        imageUrl: cleanStr(row[5]),
+        timestamp: row[1] instanceof Date ? Utilities.formatDate(row[1], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr_(row[1]),
+        monthYear: cleanStr_(row[2]),
+        title: cleanStr_(row[3]),
+        content: cleanStr_(row[4]),
+        imageUrl: cleanStr_(row[5]),
         startsAt: schedule.startsAt ? Utilities.formatDate(new Date(Number(schedule.startsAt)), 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm") : '',
         endsAt: schedule.endsAt ? Utilities.formatDate(new Date(Number(schedule.endsAt)), 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm") : '',
-        isImportant: cleanStr(row[6]) === 'YES',
-        requireAck: cleanStr(row[7]) === 'YES',
-        createdBy: cleanStr(row[8]),
+        isImportant: cleanStr_(row[6]) === 'YES',
+        requireAck: cleanStr_(row[7]) === 'YES',
+        createdBy: cleanStr_(row[8]),
         status: effectiveStatus,
         viewCount: viewCount,
         ackCount: ackCount,
@@ -755,9 +827,9 @@ function getAnnouncementStats() {
 // 📊 Core Data Fetcher (Optimized)
 // ------------------------------------------
 
-function getAllMonthData(selectedMonth) {
+function getAllMonthData_(selectedMonth) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var months = getAvailableMonths(ss);
+  var months = getAvailableMonths_(ss);
   if (!selectedMonth && months.length > 0) {
     selectedMonth = months[0];
   }
@@ -766,45 +838,40 @@ function getAllMonthData(selectedMonth) {
     return { success: false, message: 'ไม่พบชีตประจำเดือน: ' + selectedMonth };
   }
 
-  var kpiMap = getKPIMap(selectedMonth, ss);
+  var kpiMap = getKPIMap_(selectedMonth, ss);
   var vjSheet = ss.getSheetByName('vj mc all') || ss.getSheetByName('VJ MC ALL') || ss.getSheetByName('vj_mc_all');
   var vjProfileMap = {};
-  var vjPassMap = {};
 
   if (vjSheet) {
     var vjValues = vjSheet.getDataRange().getValues();
     var hRow = vjValues[0] || [];
-    var nameIdx = 0, stageIdx = 1, teamIdx = 2, roleIdx = 3, shiftIdx = 5, passIdx = 6, tiktokIdx = 7, statusIdx = 8;
+    var nameIdx = 0, stageIdx = 1, teamIdx = 2, roleIdx = 3, shiftIdx = 5, tiktokIdx = 7, statusIdx = 8;
     
     for (var c = 0; c < hRow.length; c++) {
-      var hStr = cleanStr(hRow[c]).toUpperCase();
+      var hStr = cleanStr_(hRow[c]).toUpperCase();
       if (hStr === 'NAME' || hStr === 'ชื่อ') nameIdx = c;
       else if (hStr === 'STGE NAME' || hStr === 'STAGE NAME' || hStr === 'ชื่อการแสดง') stageIdx = c;
       else if (hStr === 'TEAM' || hStr === 'ทีม') teamIdx = c;
       else if (hStr === 'ROLE' || hStr === 'ตำแหน่ง') roleIdx = c;
       else if (hStr === 'SHIFT' || hStr === 'เวลาทำงาน' || c === 8) shiftIdx = c;
-      else if (hStr === 'PASSWORD' || hStr === 'PASSCODE' || hStr === 'PIN' || hStr === 'รหัสผ่าน') passIdx = c;
       else if (hStr === 'ID TIKTOK' || hStr === 'TIKTOK ID' || hStr === 'TIKTOK') tiktokIdx = c;
       else if (hStr === 'STATUS' || hStr === 'สถานะ') statusIdx = c;
     }
 
     for (var i = 1; i < vjValues.length; i++) {
-      var stageName = cleanStr(vjValues[i][stageIdx]);
+      var stageName = cleanStr_(vjValues[i][stageIdx]);
       if (!stageName) continue;
-      var passVal = (passIdx !== -1 && vjValues[i][passIdx]) ? cleanStr(vjValues[i][passIdx]) : '1234';
-      var tiktokVal = tiktokIdx !== -1 ? cleanStr(vjValues[i][tiktokIdx]) : '';
-      
-      vjPassMap[stageName.toLowerCase()] = passVal;
+      var tiktokVal = tiktokIdx !== -1 ? cleanStr_(vjValues[i][tiktokIdx]) : '';
+
       vjProfileMap[stageName.toLowerCase()] = {
-        fullName: cleanStr(vjValues[i][nameIdx]) || stageName,
+        fullName: cleanStr_(vjValues[i][nameIdx]) || stageName,
         stageName: stageName,
-        team: cleanStr(vjValues[i][teamIdx]) || '-',
-        role: cleanStr(vjValues[i][roleIdx]) || '-',
-        shift: cleanStr(vjValues[i][shiftIdx]) || '-',
-        status: cleanStr(vjValues[i][statusIdx]) || 'ทำงานอยู่',
-        password: passVal,
+        team: cleanStr_(vjValues[i][teamIdx]) || '-',
+        role: cleanStr_(vjValues[i][roleIdx]) || '-',
+        shift: cleanStr_(vjValues[i][shiftIdx]) || '-',
+        status: cleanStr_(vjValues[i][statusIdx]) || 'ทำงานอยู่',
         tiktokId: tiktokVal,
-        avatarUrl: getProfilePicUrl(tiktokVal, stageName)
+        avatarUrl: getProfilePicUrl_(tiktokVal, stageName)
       };
     }
   }
@@ -820,9 +887,9 @@ function getAllMonthData(selectedMonth) {
   for (var r = 0; r < mData.length; r++) {
     var row = mData[r];
     if (!row || row.length < 6) continue;
-    var colA_Team = cleanStr(row[0]);
-    var colE_Stage = cleanStr(row[4]);
-    var monthlyDiamStr = cleanStr(row[5]);
+    var colA_Team = cleanStr_(row[0]);
+    var colE_Stage = cleanStr_(row[4]);
+    var monthlyDiamStr = cleanStr_(row[5]);
     if (!colE_Stage) continue;
 
     var lowerStage = colE_Stage.toLowerCase();
@@ -841,14 +908,14 @@ function getAllMonthData(selectedMonth) {
 
     for (var day = 1; day <= 31; day++) {
       var colIndex = day + 5;
-      var rawVal = colIndex < row.length ? cleanStr(row[colIndex]) : '-';
-      var dayVal = parseDiamondVal(rawVal);
+      var rawVal = colIndex < row.length ? cleanStr_(row[colIndex]) : '-';
+      var dayVal = parseDiamondVal_(rawVal);
       
       dailyEarnings.push(rawVal !== '' ? rawVal : '-');
       dailySum += dayVal;
     }
 
-    var currentDiamond = parseDiamondVal(monthlyDiamStr);
+    var currentDiamond = parseDiamondVal_(monthlyDiamStr);
     if (currentDiamond === 0 && dailySum > 0) {
       currentDiamond = dailySum;
     }
@@ -858,11 +925,10 @@ function getAllMonthData(selectedMonth) {
       stageName: colE_Stage,
       team: colA_Team || 'ไม่ระบุทีม',
       role: '-',
-      shift: cleanStr(row[1]) || '-',
+      shift: cleanStr_(row[1]) || '-',
       status: 'ทำงานอยู่',
-      password: vjPassMap[lowerStage] || '1234',
       tiktokId: '',
-      avatarUrl: getProfilePicUrl('', colE_Stage)
+      avatarUrl: getProfilePicUrl_('', colE_Stage)
     };
 
     var targetDiamond = kpiMap[lowerStage] !== undefined ? kpiMap[lowerStage] : 100000;
@@ -874,7 +940,7 @@ function getAllMonthData(selectedMonth) {
       vjName: colE_Stage,
       fullName: profile.fullName,
       team: profile.team || colA_Team || 'ไม่ระบุทีม',
-      shift: profile.shift || cleanStr(row[1]) || '-',
+      shift: profile.shift || cleanStr_(row[1]) || '-',
       targetDiamond: targetDiamond,
       currentDiamond: currentDiamond,
       remainingDiamond: remDiamond,
@@ -883,9 +949,8 @@ function getAllMonthData(selectedMonth) {
       dailyEarnings: dailyEarnings,
       profilePic: profile.avatarUrl,
       tiktokId: profile.tiktokId,
-      password: profile.password,
-      workDays: cleanStr(row[2]) || '0',
-      leaveDays: cleanStr(row[3]) || '0'
+      workDays: cleanStr_(row[2]) || '0',
+      leaveDays: cleanStr_(row[3]) || '0'
     });
   }
 
@@ -902,9 +967,11 @@ function getAllMonthData(selectedMonth) {
 // 📈 MOM COMPARISON DATA MODULE
 // ------------------------------------------
 
-function getKpiComparisonData(currentMonth, prevMonth) {
+function getKpiComparisonData(currentMonth, prevMonth, sessionToken, ipAddress) {
   try {
-    var availableMonths = getAvailableMonths();
+    var auth = requireSession_(sessionToken, 'ADMIN', ipAddress);
+    if (!auth.success) return auth;
+    var availableMonths = getAvailableMonths_();
     if (!currentMonth && availableMonths.length > 0) currentMonth = availableMonths[0];
     if (!prevMonth && availableMonths.length > 1) {
       var currIdx = availableMonths.indexOf(currentMonth);
@@ -915,8 +982,8 @@ function getKpiComparisonData(currentMonth, prevMonth) {
       }
     }
 
-    var currData = getAllMonthData(currentMonth);
-    var prevData = prevMonth ? getAllMonthData(prevMonth) : { list: [] };
+    var currData = getAllMonthData_(currentMonth);
+    var prevData = prevMonth ? getAllMonthData_(prevMonth) : { list: [] };
 
     if (!currData || !currData.list) {
       return { success: false, message: 'ไม่พบข้อมูลของเดือน ' + currentMonth };
@@ -1035,7 +1102,7 @@ function getKpiComparisonData(currentMonth, prevMonth) {
 // ⏰ ATTENDANCE SYSTEM MODULE
 // ------------------------------------------
 
-function getOrCreateAttendanceSheet() {
+function getOrCreateAttendanceSheet_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('Attendance_Data') || ss.getSheetByName('Attendance');
   if (!sheet) {
@@ -1051,12 +1118,12 @@ function getOrCreateAttendanceSheet() {
   return sheet;
 }
 
-function formatDateStandard(dateInput) {
+function formatDateStandard_(dateInput) {
   if (!dateInput) return '';
   if (dateInput instanceof Date) {
     return Utilities.formatDate(dateInput, 'Asia/Bangkok', 'yyyy-MM-dd');
   }
-  var str = cleanStr(dateInput);
+  var str = cleanStr_(dateInput);
   if (str.match(/^\d{4}\/\d{1,2}\/\d{1,2}$/)) {
     var ymd = str.split('/');
     return ymd[0] + '-' + ymd[1].padStart(2, '0') + '-' + ymd[2].padStart(2, '0');
@@ -1076,30 +1143,30 @@ function formatDateStandard(dateInput) {
 
 var ATTENDANCE_SOURCE_SPREADSHEET_ID = '1xiQFVwPXFG9wK91vh78DYj3gaeSvJBSGmg90adatfDc';
 
-function formatAttendanceTime(value) {
+function formatAttendanceTime_(value) {
   if (value === null || value === undefined || value === '') return '';
   if (value instanceof Date) return Utilities.formatDate(value, 'Asia/Bangkok', 'HH:mm');
   if (typeof value === 'number' && value >= 0 && value < 1) {
     var totalMinutes = Math.round(value * 1440);
     return ('0' + Math.floor(totalMinutes / 60) % 24).slice(-2) + ':' + ('0' + (totalMinutes % 60)).slice(-2);
   }
-  var raw = cleanStr(value);
+  var raw = cleanStr_(value);
   var match = raw.match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
   return match ? ('0' + match[1]).slice(-2) + ':' + match[2] : raw;
 }
 
-function attendanceMonthFromDate(dateText) {
-  var m = cleanStr(dateText).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+function attendanceMonthFromDate_(dateText) {
+  var m = cleanStr_(dateText).match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return '';
   var date = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0);
   return Utilities.formatDate(date, 'Asia/Bangkok', 'MMMM yyyy').toUpperCase();
 }
 
-function getAttendanceSourceSpreadsheet() {
+function getAttendanceSourceSpreadsheet_() {
   return SpreadsheetApp.openById(ATTENDANCE_SOURCE_SPREADSHEET_ID);
 }
 
-function getVJShiftMap(selectedMonth, attendanceSpreadsheet) {
+function getVJShiftMap_(selectedMonth, attendanceSpreadsheet) {
   var map = {};
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1110,18 +1177,18 @@ function getVJShiftMap(selectedMonth, attendanceSpreadsheet) {
       var hRow = vValues[0] || [];
       var stageIdx = 1, teamIdx = 2, shiftIdx = 8;
       for (var c = 0; c < hRow.length; c++) {
-        var hStr = cleanStr(hRow[c]).toUpperCase();
+        var hStr = cleanStr_(hRow[c]).toUpperCase();
         if (hStr === 'STGE NAME' || hStr === 'STAGE NAME' || hStr === 'ชื่อการแสดง') stageIdx = c;
         else if (hStr === 'TEAM' || hStr === 'ทีม') teamIdx = c;
         else if (hStr === 'SHIFT' || hStr === 'เวลาทำงาน' || c === 8) shiftIdx = c;
       }
       for (var i = 1; i < vValues.length; i++) {
-        var stage = cleanStr(vValues[i][stageIdx]);
+        var stage = cleanStr_(vValues[i][stageIdx]);
         if (stage) {
           map[stage.toLowerCase()] = {
             stageName: stage,
-            team: cleanStr(vValues[i][teamIdx]) || 'ไม่ระบุทีม',
-            shift: cleanStr(vValues[i][shiftIdx]) || '-'
+            team: cleanStr_(vValues[i][teamIdx]) || 'ไม่ระบุทีม',
+            shift: cleanStr_(vValues[i][shiftIdx]) || '-'
           };
         }
       }
@@ -1132,9 +1199,9 @@ function getVJShiftMap(selectedMonth, attendanceSpreadsheet) {
       if (monthSheet) {
         var mValues = monthSheet.getDataRange().getValues();
         for (var r = 1; r < mValues.length; r++) {
-          var team = cleanStr(mValues[r][0]);
-          var shift = cleanStr(mValues[r][1]);
-          var vjName = cleanStr(mValues[r][4]);
+          var team = cleanStr_(mValues[r][0]);
+          var shift = cleanStr_(mValues[r][1]);
+          var vjName = cleanStr_(mValues[r][4]);
           if (vjName) {
             var lowerName = vjName.toLowerCase();
             if (!map[lowerName]) {
@@ -1149,36 +1216,36 @@ function getVJShiftMap(selectedMonth, attendanceSpreadsheet) {
     }
 
     // Shift_Settings in the attendance workbook supplies team start/end times when the ACE VJ sheet has no shift.
-    var attendanceSs = attendanceSpreadsheet || getAttendanceSourceSpreadsheet();
+    var attendanceSs = attendanceSpreadsheet || getAttendanceSourceSpreadsheet_();
     var settingsSheet = attendanceSs.getSheetByName('Shift_Settings');
     if (settingsSheet) {
       var settings = settingsSheet.getDataRange().getValues();
-      var sh = (settings[0] || []).map(function(v) { return cleanStr(v).toUpperCase().replace(/[\s_-]+/g, ''); });
+      var sh = (settings[0] || []).map(function(v) { return cleanStr_(v).toUpperCase().replace(/[\s_-]+/g, ''); });
       var teamCol = sh.indexOf('TEAM'), startCol = sh.indexOf('WORKSTART'), endCol = sh.indexOf('WORKEND');
       if (teamCol >= 0 && startCol >= 0 && endCol >= 0) {
         var teamShifts = Object.create(null);
         for (var si = 1; si < settings.length; si++) {
-          var teamName = cleanStr(settings[si][teamCol]);
-          var startTime = formatAttendanceTime(settings[si][startCol]);
-          var endTime = formatAttendanceTime(settings[si][endCol]);
+          var teamName = cleanStr_(settings[si][teamCol]);
+          var startTime = formatAttendanceTime_(settings[si][startCol]);
+          var endTime = formatAttendanceTime_(settings[si][endCol]);
           if (teamName && startTime && endTime) teamShifts[teamName.toLowerCase()] = startTime + ' - ' + endTime;
         }
         Object.keys(map).forEach(function(key) {
           if (!map[key].shift || map[key].shift === '-' || map[key].shift === 'ไม่ระบุกะ') {
-            map[key].shift = teamShifts[cleanStr(map[key].team).toLowerCase()] || map[key].shift || '-';
+            map[key].shift = teamShifts[cleanStr_(map[key].team).toLowerCase()] || map[key].shift || '-';
           }
         });
       }
     }
   } catch (err) {
-    Logger.log('Error in getVJShiftMap: ' + err.toString());
+    Logger.log('Error in getVJShiftMap_: ' + err.toString());
   }
   return map;
 }
 
-function parseTimeToMinutes(timeStr) {
+function parseTimeToMinutes_(timeStr) {
   if (!timeStr) return null;
-  var cleaned = cleanStr(timeStr);
+  var cleaned = cleanStr_(timeStr);
   var match = cleaned.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
   if (!match) return null;
   var hrs = parseInt(match[1], 10);
@@ -1186,7 +1253,7 @@ function parseTimeToMinutes(timeStr) {
   return hrs * 60 + mins;
 }
 
-function calculateAttendanceMetrics(clockIn, clockOut, shiftStr) {
+function calculateAttendanceMetrics_(clockIn, clockOut, shiftStr) {
   var shiftStartMins = null;
   var shiftEndMins = null;
   var shiftStartStr = '';
@@ -1197,8 +1264,8 @@ function calculateAttendanceMetrics(clockIn, clockOut, shiftStr) {
     if (parts.length >= 2) {
       shiftStartStr = parts[0].trim();
       shiftEndStr = parts[1].trim();
-      shiftStartMins = parseTimeToMinutes(shiftStartStr);
-      shiftEndMins = parseTimeToMinutes(shiftEndStr);
+      shiftStartMins = parseTimeToMinutes_(shiftStartStr);
+      shiftEndMins = parseTimeToMinutes_(shiftEndStr);
     }
   }
 
@@ -1206,8 +1273,8 @@ function calculateAttendanceMetrics(clockIn, clockOut, shiftStr) {
     clockOut = shiftEndStr;
   }
 
-  var clockInMins = parseTimeToMinutes(clockIn);
-  var clockOutMins = parseTimeToMinutes(clockOut);
+  var clockInMins = parseTimeToMinutes_(clockIn);
+  var clockOutMins = parseTimeToMinutes_(clockOut);
 
   var lateMinutes = 0;
   if (clockInMins !== null && shiftStartMins !== null) {
@@ -1242,23 +1309,23 @@ function calculateAttendanceMetrics(clockIn, clockOut, shiftStr) {
   };
 }
 
-function getAttendanceRecords(selectedMonth, targetVJName) {
+function getAttendanceRecords_(selectedMonth, targetVJName) {
   try {
-    var filterVJ = targetVJName ? cleanStr(targetVJName).toLowerCase() : '';
-    var filterMonth = selectedMonth ? cleanStr(selectedMonth).toUpperCase() : '';
+    var filterVJ = targetVJName ? cleanStr_(targetVJName).toLowerCase() : '';
+    var filterMonth = selectedMonth ? cleanStr_(selectedMonth).toUpperCase() : '';
     var recordsByKey = Object.create(null);
     var sourceWarning = '';
     var externalSs = null;
     var shiftMap = {};
 
     try {
-      externalSs = getAttendanceSourceSpreadsheet();
+      externalSs = getAttendanceSourceSpreadsheet_();
       var logSheet = externalSs.getSheetByName('Attendance_Logs');
       if (!logSheet) throw new Error('ไม่พบชีต Attendance_Logs ในไฟล์ต้นทาง');
-      shiftMap = getVJShiftMap(selectedMonth, externalSs);
+      shiftMap = getVJShiftMap_(selectedMonth, externalSs);
       var sourceData = logSheet.getDataRange().getValues();
       if (sourceData.length > 1) {
-        var headers = (sourceData[0] || []).map(function(v) { return cleanStr(v).toUpperCase().replace(/[\s_-]+/g, ''); });
+        var headers = (sourceData[0] || []).map(function(v) { return cleanStr_(v).toUpperCase().replace(/[\s_-]+/g, ''); });
         function sourceCol(names) { for (var x = 0; x < names.length; x++) { var idx = headers.indexOf(names[x]); if (idx >= 0) return idx; } return -1; }
         var idCol = sourceCol(['LOGID','ID']);
         var nameCol = sourceCol(['NAME','STAGENAME','VJNAME']);
@@ -1269,20 +1336,20 @@ function getAttendanceRecords(selectedMonth, targetVJName) {
 
         for (var i = 1; i < sourceData.length; i++) {
           var row = sourceData[i];
-          var dateVal = formatDateStandard(row[dateCol]);
-          var vjName = cleanStr(row[nameCol]);
+          var dateVal = formatDateStandard_(row[dateCol]);
+          var vjName = cleanStr_(row[nameCol]);
           if (!dateVal || !vjName) continue;
           var lowerName = vjName.toLowerCase();
-          var monthYear = attendanceMonthFromDate(dateVal);
+          var monthYear = attendanceMonthFromDate_(dateVal);
           if (filterVJ && lowerName !== filterVJ) continue;
-          if (filterMonth && monthYear !== filterMonth && attendanceMonthFromDate(dateVal) !== filterMonth && dateVal.substring(0, 7) !== filterMonth) continue;
+          if (filterMonth && monthYear !== filterMonth && attendanceMonthFromDate_(dateVal) !== filterMonth && dateVal.substring(0, 7) !== filterMonth) continue;
           var mapped = shiftMap[lowerName] || { team: '-', shift: '-' };
-          var clockIn = formatAttendanceTime(row[inCol]);
-          var clockOut = formatAttendanceTime(row[outCol]);
-          var metrics = calculateAttendanceMetrics(clockIn, clockOut, mapped.shift);
+          var clockIn = formatAttendanceTime_(row[inCol]);
+          var clockOut = formatAttendanceTime_(row[outCol]);
+          var metrics = calculateAttendanceMetrics_(clockIn, clockOut, mapped.shift);
           var key = dateVal + '|' + lowerName;
           recordsByKey[key] = {
-            id: idCol >= 0 ? cleanStr(row[idCol]) : 'SOURCE_' + (i + 1), rowIndex: i + 1,
+            id: idCol >= 0 ? cleanStr_(row[idCol]) : 'SOURCE_' + (i + 1), rowIndex: i + 1,
             date: dateVal, monthYear: monthYear, vjName: vjName, team: mapped.team || '-',
             scheduledShift: mapped.shift || '-', clockIn: clockIn, clockOut: metrics.clockOutFixed || clockOut,
             workHours: metrics.workHours, lateMinutes: metrics.lateMinutes, status: metrics.status,
@@ -1301,29 +1368,29 @@ function getAttendanceRecords(selectedMonth, targetVJName) {
     if (localSheet) {
       var localData = localSheet.getDataRange().getValues();
       if (localData.length > 1) {
-        if (!Object.keys(shiftMap).length) shiftMap = getVJShiftMap(selectedMonth, externalSs || undefined);
+        if (!Object.keys(shiftMap).length) shiftMap = getVJShiftMap_(selectedMonth, externalSs || undefined);
         for (var j = 1; j < localData.length; j++) {
           var r = localData[j];
-          var localDate = formatDateStandard(r[1]);
-          var localName = cleanStr(r[3]);
+          var localDate = formatDateStandard_(r[1]);
+          var localName = cleanStr_(r[3]);
           var localLower = localName.toLowerCase();
           if (!localDate || !localName) continue;
-          var localMonth = cleanStr(r[2]).toUpperCase() || attendanceMonthFromDate(localDate);
+          var localMonth = cleanStr_(r[2]).toUpperCase() || attendanceMonthFromDate_(localDate);
           if (filterVJ && localLower !== filterVJ) continue;
-          if (filterMonth && localMonth !== filterMonth && attendanceMonthFromDate(localDate) !== filterMonth && localDate.substring(0, 7) !== filterMonth) continue;
-          var localMapped = shiftMap[localLower] || { team: cleanStr(r[4]) || '-', shift: cleanStr(r[5]) || '-' };
-          var localIn = formatAttendanceTime(r[6]);
-          var localOut = formatAttendanceTime(r[7]);
-          var localMetrics = calculateAttendanceMetrics(localIn, localOut, cleanStr(r[5]) || localMapped.shift);
+          if (filterMonth && localMonth !== filterMonth && attendanceMonthFromDate_(localDate) !== filterMonth && localDate.substring(0, 7) !== filterMonth) continue;
+          var localMapped = shiftMap[localLower] || { team: cleanStr_(r[4]) || '-', shift: cleanStr_(r[5]) || '-' };
+          var localIn = formatAttendanceTime_(r[6]);
+          var localOut = formatAttendanceTime_(r[7]);
+          var localMetrics = calculateAttendanceMetrics_(localIn, localOut, cleanStr_(r[5]) || localMapped.shift);
           recordsByKey[localDate + '|' + localLower] = {
-            id: cleanStr(r[0]), rowIndex: j + 1, date: localDate, monthYear: localMonth,
-            vjName: localName, team: cleanStr(r[4]) || localMapped.team || '-',
-            scheduledShift: cleanStr(r[5]) || localMapped.shift || '-', clockIn: localIn,
+            id: cleanStr_(r[0]), rowIndex: j + 1, date: localDate, monthYear: localMonth,
+            vjName: localName, team: cleanStr_(r[4]) || localMapped.team || '-',
+            scheduledShift: cleanStr_(r[5]) || localMapped.shift || '-', clockIn: localIn,
             clockOut: localMetrics.clockOutFixed || localOut,
             workHours: r[8] !== '' && r[8] !== null ? Number(r[8]) : localMetrics.workHours,
             lateMinutes: r[9] !== '' && r[9] !== null ? Number(r[9]) : localMetrics.lateMinutes,
-            status: cleanStr(r[10]) || localMetrics.status, source: cleanStr(r[11]) || 'Manual',
-            createdBy: cleanStr(r[12]) || '-', createdAt: r[13] ? (r[13] instanceof Date ? Utilities.formatDate(r[13], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr(r[13])) : '-'
+            status: cleanStr_(r[10]) || localMetrics.status, source: cleanStr_(r[11]) || 'Manual',
+            createdBy: cleanStr_(r[12]) || '-', createdAt: r[13] ? (r[13] instanceof Date ? Utilities.formatDate(r[13], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : cleanStr_(r[13])) : '-'
           };
         }
       }
@@ -1336,22 +1403,25 @@ function getAttendanceRecords(selectedMonth, targetVJName) {
   }
 }
 
-function uploadBulkAttendance(recordsArray, adminName, selectedMonth, ipAddress, deviceInfo) {
+function uploadBulkAttendance(recordsArray, adminName, selectedMonth, ipAddress, deviceInfo, sessionToken) {
   try {
-    if (!recordsArray || recordsArray.length === 0) {
+    var auth = requireSession_(sessionToken, 'ADMIN', ipAddress);
+    if (!auth.success) return auth;
+    adminName = auth.session.userName;
+    if (!Array.isArray(recordsArray) || recordsArray.length === 0 || recordsArray.length > 1000) {
       return { success: false, message: 'ไม่มีข้อมูลสำหรับอัปโหลด' };
     }
 
-    var sheet = getOrCreateAttendanceSheet();
-    var shiftMap = getVJShiftMap(selectedMonth);
+    var sheet = getOrCreateAttendanceSheet_();
+    var shiftMap = getVJShiftMap_(selectedMonth);
     var nowStr = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
     var createdBy = adminName || 'Admin';
 
     var data = sheet.getDataRange().getValues();
     var lookupMap = {};
     for (var i = 1; i < data.length; i++) {
-      var rDate = formatDateStandard(data[i][1]);
-      var rVJ = cleanStr(data[i][3]).toLowerCase();
+      var rDate = formatDateStandard_(data[i][1]);
+      var rVJ = cleanStr_(data[i][3]).toLowerCase();
       if (rDate && rVJ) {
         lookupMap[rDate + '_' + rVJ] = {
           rowIndex: i + 1,
@@ -1362,8 +1432,8 @@ function uploadBulkAttendance(recordsArray, adminName, selectedMonth, ipAddress,
 
     var count = 0;
     recordsArray.forEach(function(item) {
-      var dateVal = formatDateStandard(item.date);
-      var vjName = cleanStr(item.vjName || item.stageName);
+      var dateVal = formatDateStandard_(item.date);
+      var vjName = cleanStr_(item.vjName || item.stageName);
       if (!dateVal || !vjName) return;
 
       var lowerVJ = vjName.toLowerCase();
@@ -1371,10 +1441,10 @@ function uploadBulkAttendance(recordsArray, adminName, selectedMonth, ipAddress,
 
       var team = item.team || mappedInfo.team;
       var shift = item.shift || mappedInfo.shift;
-      var clockIn = cleanStr(item.checkIn || item.clockIn);
-      var clockOut = cleanStr(item.checkOut || item.clockOut);
+      var clockIn = cleanStr_(item.checkIn || item.clockIn);
+      var clockOut = cleanStr_(item.checkOut || item.clockOut);
 
-      var metrics = calculateAttendanceMetrics(clockIn, clockOut, shift);
+      var metrics = calculateAttendanceMetrics_(clockIn, clockOut, shift);
       var status = item.status || metrics.status;
       var lateMins = metrics.lateMinutes;
       var workHrs = metrics.workHours;
@@ -1400,29 +1470,34 @@ function uploadBulkAttendance(recordsArray, adminName, selectedMonth, ipAddress,
       count++;
     });
 
-    writeLog('ADMIN', adminName, 'IMPORT_ATTENDANCE_EXCEL', 'อัปโหลดเวลาเข้างานประจำเดือน ' + selectedMonth + ' จำนวน ' + count + ' รายการ', ipAddress, deviceInfo);
+    writeLog_('ADMIN', adminName, 'IMPORT_ATTENDANCE_EXCEL', 'อัปโหลดเวลาเข้างานประจำเดือน ' + selectedMonth + ' จำนวน ' + count + ' รายการ', ipAddress, deviceInfo);
     return { success: true, count: count, message: 'นำเข้าข้อมูลและอัปเดตเรียบร้อยแล้ว ' + count + ' รายการ' };
   } catch (err) {
     return { success: false, message: err.toString() };
   }
 }
 
-function saveSingleAttendanceRecord(recordData, adminName, selectedMonth, ipAddress, deviceInfo) {
+function saveSingleAttendanceRecord(recordData, adminName, selectedMonth, ipAddress, deviceInfo, sessionToken) {
   try {
-    var sheet = getOrCreateAttendanceSheet();
-    var shiftMap = getVJShiftMap(selectedMonth);
+    var auth = requireSession_(sessionToken, 'ADMIN', ipAddress);
+    if (!auth.success) return auth;
+    adminName = auth.session.userName;
+    if (!recordData || typeof recordData !== 'object') return { success: false, message: 'ข้อมูลเวลาเข้าออกไม่ถูกต้อง' };
+    var sheet = getOrCreateAttendanceSheet_();
+    var shiftMap = getVJShiftMap_(selectedMonth);
 
-    var dateVal = formatDateStandard(recordData.date);
-    var vjName = cleanStr(recordData.vjName);
+    var dateVal = formatDateStandard_(recordData.date);
+    var vjName = cleanStr_(recordData.vjName);
+    if (!dateVal || !vjName || vjName.length > 100) return { success: false, message: 'โปรดระบุวันที่และชื่อ VJ ให้ถูกต้อง' };
     var lowerVJ = vjName.toLowerCase();
     var mappedInfo = shiftMap[lowerVJ] || { team: 'ไม่ระบุทีม', shift: 'ไม่ระบุกะ' };
 
     var team = recordData.team || mappedInfo.team;
     var shift = recordData.shift || mappedInfo.shift;
-    var clockIn = cleanStr(recordData.checkIn || recordData.clockIn);
-    var clockOut = cleanStr(recordData.checkOut || recordData.clockOut);
+    var clockIn = cleanStr_(recordData.checkIn || recordData.clockIn);
+    var clockOut = cleanStr_(recordData.checkOut || recordData.clockOut);
     
-    var metrics = calculateAttendanceMetrics(clockIn, clockOut, shift);
+    var metrics = calculateAttendanceMetrics_(clockIn, clockOut, shift);
     var status = recordData.status || metrics.status;
     var lateMins = metrics.lateMinutes;
     var workHrs = metrics.workHours;
@@ -1437,8 +1512,8 @@ function saveSingleAttendanceRecord(recordData, adminName, selectedMonth, ipAddr
     var targetRowIndex = -1;
 
     for (var i = 1; i < data.length; i++) {
-      var rDate = formatDateStandard(data[i][1]);
-      var rVJ = cleanStr(data[i][3]).toLowerCase();
+      var rDate = formatDateStandard_(data[i][1]);
+      var rVJ = cleanStr_(data[i][3]).toLowerCase();
       if (rDate === dateVal && rVJ === lowerVJ) {
         targetRowIndex = i + 1;
         break;
@@ -1450,13 +1525,13 @@ function saveSingleAttendanceRecord(recordData, adminName, selectedMonth, ipAddr
       sheet.getRange(targetRowIndex, 1, 1, 14).setValues([[
         existingId, dateVal, monthYear, vjName, team, shift, clockIn, finalClockOut, workHrs, lateMins, status, source, createdBy, nowStr
       ]]);
-      writeLog('ADMIN', adminName, 'MANUAL_ATTENDANCE_UPDATE', 'แก้ไขเวลาเข้างาน VJ: ' + vjName + ' วันที่: ' + dateVal, ipAddress, deviceInfo);
+      writeLog_('ADMIN', adminName, 'MANUAL_ATTENDANCE_UPDATE', 'แก้ไขเวลาเข้างาน VJ: ' + vjName + ' วันที่: ' + dateVal, ipAddress, deviceInfo);
     } else {
       var newId = 'ATT_' + new Date().getTime() + '_' + Math.floor(Math.random() * 1000);
       sheet.appendRow([
         newId, dateVal, monthYear, vjName, team, shift, clockIn, finalClockOut, workHrs, lateMins, status, source, createdBy, nowStr
       ]);
-      writeLog('ADMIN', adminName, 'MANUAL_ATTENDANCE_UPDATE', 'บันทึกเวลาเข้างาน VJ: ' + vjName + ' วันที่: ' + dateVal, ipAddress, deviceInfo);
+      writeLog_('ADMIN', adminName, 'MANUAL_ATTENDANCE_UPDATE', 'บันทึกเวลาเข้างาน VJ: ' + vjName + ' วันที่: ' + dateVal, ipAddress, deviceInfo);
     }
 
     return { success: true, message: 'บันทึกข้อมูลเรียบร้อยแล้ว' };
@@ -1469,66 +1544,68 @@ function saveSingleAttendanceRecord(recordData, adminName, selectedMonth, ipAddr
 // 🔓 Authentication & Data Return
 // ------------------------------------------
 
-function verifyAndGetPersonalData(vjStageName, inputPassword, selectedMonth, ipAddress, deviceInfo) {
+function verifyAndGetPersonalData(vjStageName, inputPassword, selectedMonth, ipAddress, deviceInfo, sessionToken) {
   try {
-    var permCheck = checkAccessPermission(vjStageName, ipAddress);
-    if (!permCheck.allowed) {
-      writeLog('VJ', vjStageName, 'ACCESS_BLOCKED', permCheck.reason, ipAddress, deviceInfo);
-      return { success: false, message: '⛔ ' + permCheck.reason };
+    var isNewLogin = !sessionToken;
+    var session = null;
+    var targetName = cleanStr_(vjStageName).toLowerCase();
+    if (isNewLogin) {
+      if (!targetName || isLoginRateLimited_('VJ', targetName)) return { success: false, message: 'เข้าสู่ระบบไม่สำเร็จ กรุณารอสักครู่แล้วลองใหม่' };
+      var permCheck = checkAccessPermission_(vjStageName, ipAddress);
+      if (!permCheck.allowed) return { success: false, message: '⛔ ' + permCheck.reason };
+    } else {
+      var auth = requireSession_(sessionToken, 'VJ', ipAddress);
+      if (!auth.success) return auth;
+      session = auth.session;
+      vjStageName = session.userName;
+      targetName = cleanStr_(vjStageName).toLowerCase();
     }
-
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var vjSheet = ss.getSheetByName('vj mc all') || ss.getSheetByName('VJ MC ALL') || ss.getSheetByName('vj_mc_all');
-    var targetName = cleanStr(vjStageName).toLowerCase();
-    var targetPass = cleanStr(inputPassword);
-
-    var verified = false;
-    var userProfile = { stageName: cleanStr(vjStageName), fullName: cleanStr(vjStageName), role: '', team: '-', shift: '-', profilePic: getProfilePicUrl('', vjStageName) };
-    if (vjSheet) {
-      var vjValues = vjSheet.getDataRange().getValues();
-      var hRow = vjValues[0] || [];
-      var stageIdx = 1, passIdx = -1, nameIdx = 0, teamIdx = 2, roleIdx = 3, shiftIdx = 5, tiktokIdx = 7;
-      for (var c = 0; c < hRow.length; c++) {
-        var hStr = cleanStr(hRow[c]).toUpperCase().replace(/[\s_-]+/g, '');
-        if (hStr === 'STGENAME' || hStr === 'STAGENAME' || hStr === 'ชื่อการแสดง') stageIdx = c;
-        if (hStr === 'NAME' || hStr === 'FULLNAME' || hStr === 'ชื่อ') nameIdx = c;
-        if (hStr === 'TEAM' || hStr === 'ทีม') teamIdx = c;
-        if (hStr === 'ROLE' || hStr === 'ตำแหน่ง') roleIdx = c;
-        if (hStr === 'SHIFT' || hStr === 'เวลาทำงาน') shiftIdx = c;
-        if (hStr === 'IDTIKTOK' || hStr === 'TIKTOKID' || hStr === 'TIKTOK') tiktokIdx = c;
-        if (hStr === 'PASSWORD' || hStr === 'PASSCODE' || hStr === 'PIN' || hStr === 'รหัสผ่าน') passIdx = c;
+    var targetPass = cleanStr_(inputPassword);
+    if (!vjSheet) return { success: false, message: 'ไม่พบข้อมูลบัญชีผู้ใช้' };
+    var vjValues = vjSheet.getDataRange().getValues();
+    var hRow = vjValues[0] || [];
+    var stageIdx = 1, passIdx = -1, nameIdx = 0, teamIdx = 2, roleIdx = 3, shiftIdx = 5, tiktokIdx = 7;
+    for (var c = 0; c < hRow.length; c++) {
+      var hStr = cleanStr_(hRow[c]).toUpperCase().replace(/[\s_-]+/g, '');
+      if (hStr === 'STGENAME' || hStr === 'STAGENAME' || hStr === 'ชื่อการแสดง') stageIdx = c;
+      if (hStr === 'NAME' || hStr === 'FULLNAME' || hStr === 'ชื่อ') nameIdx = c;
+      if (hStr === 'TEAM' || hStr === 'ทีม') teamIdx = c;
+      if (hStr === 'ROLE' || hStr === 'ตำแหน่ง') roleIdx = c;
+      if (hStr === 'SHIFT' || hStr === 'เวลาทำงาน') shiftIdx = c;
+      if (hStr === 'IDTIKTOK' || hStr === 'TIKTOKID' || hStr === 'TIKTOK') tiktokIdx = c;
+      if (hStr === 'PASSWORD' || hStr === 'PASSCODE' || hStr === 'PIN' || hStr === 'รหัสผ่าน') passIdx = c;
+    }
+    var userProfile = null;
+    for (var i = 1; i < vjValues.length; i++) {
+      if (cleanStr_(vjValues[i][stageIdx]).toLowerCase() !== targetName) continue;
+      var storedPin = passIdx >= 0 ? cleanStr_(vjValues[i][passIdx]) : '';
+      if (isNewLogin && (!storedPin || !targetPass || storedPin !== targetPass)) {
+        recordLoginFailure_('VJ', targetName);
+        writeLog_('VJ', vjStageName, 'LOGIN_FAILED', 'รหัสผ่านไม่ถูกต้อง', ipAddress, deviceInfo);
+        return { success: false, message: 'ชื่อบัญชีหรือรหัสผ่านไม่ถูกต้อง' };
       }
-      for (var i = 1; i < vjValues.length; i++) {
-        var sName = cleanStr(vjValues[i][stageIdx]).toLowerCase();
-        if (sName === targetName) {
-          var pWord = (passIdx !== -1 && vjValues[i][passIdx]) ? cleanStr(vjValues[i][passIdx]) : "1234";
-          if (pWord === targetPass) {
-            verified = true;
-            var tiktokId = cleanStr(vjValues[i][tiktokIdx]);
-            userProfile = {
-              stageName: cleanStr(vjValues[i][stageIdx]) || cleanStr(vjStageName),
-              fullName: cleanStr(vjValues[i][nameIdx]) || cleanStr(vjStageName),
-              role: cleanStr(vjValues[i][roleIdx]),
-              team: cleanStr(vjValues[i][teamIdx]) || '-',
-              shift: cleanStr(vjValues[i][shiftIdx]) || '-',
-              profilePic: getProfilePicUrl(tiktokId, vjStageName)
-            };
-          }
-          break;
-        }
-      }
-    } else {
-      if (targetPass === "1234") verified = true;
+      userProfile = {
+        stageName: cleanStr_(vjValues[i][stageIdx]) || cleanStr_(vjStageName),
+        fullName: cleanStr_(vjValues[i][nameIdx]) || cleanStr_(vjStageName),
+        role: cleanStr_(vjValues[i][roleIdx]),
+        team: cleanStr_(vjValues[i][teamIdx]) || '-',
+        shift: cleanStr_(vjValues[i][shiftIdx]) || '-',
+        profilePic: getProfilePicUrl_(cleanStr_(vjValues[i][tiktokIdx]), vjStageName)
+      };
+      break;
+    }
+    if (!userProfile) {
+      if (isNewLogin) recordLoginFailure_('VJ', targetName);
+      writeLog_('VJ', vjStageName, 'LOGIN_FAILED', 'ไม่พบบัญชีผู้ใช้', ipAddress, deviceInfo);
+      return { success: false, message: 'ชื่อบัญชีหรือรหัสผ่านไม่ถูกต้อง' };
+    }
+    if (isNewLogin) {
+      clearLoginFailures_('VJ', targetName);
     }
 
-    if (!verified) {
-      writeLog('VJ', vjStageName, 'LOGIN_FAILED', 'รหัสผ่านไม่ถูกต้อง', ipAddress, deviceInfo);
-      return { success: false, message: '🔒 รหัสผ่าน VJ ไม่ถูกต้อง' };
-    }
-
-    writeLog('VJ', vjStageName, 'LOGIN_SUCCESS', 'เข้าดูข้อมูลเดือน: ' + selectedMonth, ipAddress, deviceInfo);
-
-    var allData = getAllMonthData(selectedMonth);
+    var allData = getAllMonthData_(selectedMonth);
     var roleKey = userProfile.role.toUpperCase().trim();
     var isAttendanceRole = roleKey === 'HR' || roleKey === 'MC';
     var attendanceOnly = !allData || !allData.list;
@@ -1582,11 +1659,16 @@ function verifyAndGetPersonalData(vjStageName, inputPassword, selectedMonth, ipA
     personalData.totalVJs = sortedList.length;
     personalData.nextRankInfo = nextRankInfo;
 
-    var attRes = getAttendanceRecords(selectedMonth || '', vjStageName);
+    var attRes = getAttendanceRecords_(selectedMonth || '', vjStageName);
     var attendanceList = attRes.success ? attRes.records : [];
 
-    var annRes = getActiveAnnouncements(vjStageName, 'VJ');
+    var annRes = getActiveAnnouncements_(vjStageName, 'VJ');
     var announcements = annRes.success ? annRes.list : [];
+
+    if (isNewLogin) {
+      sessionToken = issueSession_('VJ', userProfile.stageName);
+      writeLog_('VJ', userProfile.stageName, 'LOGIN_SUCCESS', 'เข้าสู่ระบบเดือน: ' + (selectedMonth || '-'), ipAddress, deviceInfo);
+    }
 
     return {
       success: true,
@@ -1596,71 +1678,64 @@ function verifyAndGetPersonalData(vjStageName, inputPassword, selectedMonth, ipA
       attendanceList: attendanceList,
       attendanceSourceWarning: attRes.sourceWarning || '',
       announcements: announcements,
-      systemVersionInfo: getSystemVersionInfo()
+      systemVersionInfo: getSystemVersionInfo(),
+      sessionToken: sessionToken
     };
   } catch (err) {
     return { success: false, message: 'เกิดข้อผิดพลาด: ' + err.toString() };
   }
 }
 
-function getAdminDashboardData(adminName, adminPin, selectedMonth, ipAddress, deviceInfo) {
+function getAdminDashboardData(adminName, adminPin, selectedMonth, ipAddress, deviceInfo, sessionToken) {
   try {
-    var permCheck = checkAccessPermission(adminName, ipAddress);
-    if (!permCheck.allowed) {
-      writeLog('ADMIN', adminName, 'ACCESS_BLOCKED', permCheck.reason, ipAddress, deviceInfo);
-      return { success: false, message: '⛔ ' + permCheck.reason };
+    var isNewLogin = !sessionToken;
+    var session = null;
+    var targetName = cleanStr_(adminName).toLowerCase();
+    if (isNewLogin) {
+      if (!targetName || isLoginRateLimited_('ADMIN', targetName)) return { success: false, message: 'เข้าสู่ระบบไม่สำเร็จ กรุณารอสักครู่แล้วลองใหม่' };
+      var permission = checkAccessPermission_(adminName, ipAddress);
+      if (!permission.allowed) return { success: false, message: '⛔ ' + permission.reason };
+    } else {
+      var auth = requireSession_(sessionToken, 'ADMIN', ipAddress);
+      if (!auth.success) return auth;
+      session = auth.session;
+      adminName = session.userName;
+      targetName = cleanStr_(adminName).toLowerCase();
     }
 
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var adminSheet = ss.getSheetByName('Admins') || ss.getSheetByName('admins') || ss.getSheetByName('ADMINS');
-    
-    var safeClean = function(val) {
-      if (typeof cleanStr === 'function') return cleanStr(val);
-      return val ? String(val).trim() : '';
-    };
-
-    var targetName = safeClean(adminName).toLowerCase();
-    var inputPin = safeClean(adminPin);
-    var isAdmin = false;
-
-    if (adminSheet) {
-      var adminValues = adminSheet.getDataRange().getValues();
-      var adminHRow = adminValues[0] || [];
-      var nameIdx = 0, pinIdx = 1;
-
-      for (var c = 0; c < adminHRow.length; c++) {
-        var hStr = safeClean(adminHRow[c]).toUpperCase();
-        if (hStr === 'NAME' || hStr === 'ADMIN NAME' || hStr === 'ADMIN' || hStr === 'USERNAME' || hStr === 'ชื่อ') nameIdx = c;
-        if (hStr === 'PIN' || hStr === 'PASSWORD' || hStr === 'PASSCODE' || hStr === 'รหัสผ่าน') pinIdx = c;
-      }
-
-      for (var i = 1; i < adminValues.length; i++) {
-        var aName = safeClean(adminValues[i][nameIdx]).toLowerCase();
-        if (aName === targetName || (targetName === 'admin' && i === 1)) {
-          var aPin = safeClean(adminValues[i][pinIdx]);
-          if (aPin === inputPin) {
-            isAdmin = true;
-          } else {
-            if (typeof writeLog === 'function') writeLog('ADMIN', adminName, 'LOGIN_FAILED', 'รหัสผ่าน Admin ไม่ถูกต้อง', ipAddress, deviceInfo);
-            return { success: false, message: '🔒 รหัสผ่าน Admin ไม่ถูกต้อง' };
+    var actualAdminName = '';
+    if (isNewLogin) {
+      var inputPin = cleanStr_(adminPin);
+      if (adminSheet && inputPin) {
+        var adminValues = adminSheet.getDataRange().getValues();
+        var adminHRow = adminValues[0] || [];
+        var nameIdx = 0, pinIdx = 1;
+        for (var c = 0; c < adminHRow.length; c++) {
+          var hStr = cleanStr_(adminHRow[c]).toUpperCase();
+          if (hStr === 'NAME' || hStr === 'ADMIN NAME' || hStr === 'ADMIN' || hStr === 'USERNAME' || hStr === 'ชื่อ') nameIdx = c;
+          if (hStr === 'PIN' || hStr === 'PASSWORD' || hStr === 'PASSCODE' || hStr === 'รหัสผ่าน') pinIdx = c;
+        }
+        for (var i = 1; i < adminValues.length; i++) {
+          var rowAdminName = cleanStr_(adminValues[i][nameIdx]);
+          var storedPin = cleanStr_(adminValues[i][pinIdx]);
+          if (rowAdminName.toLowerCase() === targetName && storedPin && storedPin === inputPin) {
+            actualAdminName = rowAdminName;
+            break;
           }
-          break;
         }
       }
+      if (!actualAdminName) {
+        recordLoginFailure_('ADMIN', targetName);
+        writeLog_('ADMIN', adminName, 'LOGIN_FAILED', 'บัญชี Admin หรือรหัสผ่านไม่ถูกต้อง', ipAddress, deviceInfo);
+        return { success: false, message: 'บัญชี Admin หรือรหัสผ่านไม่ถูกต้อง' };
+      }
+      adminName = actualAdminName;
+      clearLoginFailures_('ADMIN', targetName);
     }
 
-    if (!isAdmin && (inputPin.toUpperCase() === 'ADMIN123' || inputPin === '1234')) {
-      isAdmin = true;
-    }
-
-    if (!isAdmin) {
-      if (typeof writeLog === 'function') writeLog('ADMIN', adminName, 'LOGIN_FAILED', 'บัญชี Admin หรือรหัสผ่านไม่ถูกต้อง', ipAddress, deviceInfo);
-      return { success: false, message: '🔒 บัญชี Admin หรือรหัสผ่านไม่ถูกต้อง' };
-    }
-
-    if (typeof writeLog === 'function') writeLog('ADMIN', adminName, 'LOGIN_SUCCESS', 'เข้าสู่ระบบ Admin Dashboard เดือน: ' + selectedMonth, ipAddress, deviceInfo);
-
-    var allData = (typeof getAllMonthData === 'function') ? getAllMonthData(selectedMonth) : null;
+    var allData = (typeof getAllMonthData_ === 'function') ? getAllMonthData_(selectedMonth) : null;
     if (!allData || !allData.list) {
       return { success: false, message: 'ไม่พบข้อมูลประจำเดือน ' + selectedMonth };
     }
@@ -1708,20 +1783,25 @@ function getAdminDashboardData(adminName, adminPin, selectedMonth, ipAddress, de
 
     teamSummaryList.sort(function(a, b) { return b.totalDiamonds - a.totalDiamonds; });
 
-    var attRes = (typeof getAttendanceRecords === 'function') ? getAttendanceRecords(selectedMonth, null) : { success: false };
+    var attRes = (typeof getAttendanceRecords_ === 'function') ? getAttendanceRecords_(selectedMonth, null) : { success: false };
     var attendanceList = (attRes && attRes.success) ? attRes.records : [];
 
-    var logsRes = (typeof getLogs === 'function') ? getLogs(selectedMonth) : { success: false };
+    var logsRes = (typeof getLogs_ === 'function') ? getLogs_(selectedMonth) : { success: false };
     var logsList = (logsRes && logsRes.success) ? logsRes.logs : [];
 
-    var annRes = (typeof getActiveAnnouncements === 'function') ? getActiveAnnouncements(adminName, 'ADMIN') : { success: false };
+    var annRes = (typeof getActiveAnnouncements_ === 'function') ? getActiveAnnouncements_(adminName, 'ADMIN') : { success: false };
     var announcements = (annRes && annRes.success) ? annRes.list : [];
 
-    var annStatsRes = (typeof getAnnouncementStats === 'function') ? getAnnouncementStats() : null;
+    var annStatsRes = (typeof getAnnouncementStats_ === 'function') ? getAnnouncementStats_() : null;
     var announcementStats = (annStatsRes && annStatsRes.success) ? annStatsRes : { stats: [], totalAnnouncements: 0, totalViews: 0 };
 
-    var accessRes = getAccessControlList();
+    var accessRes = getAccessControlList_();
     var accessList = accessRes.success ? accessRes.list : [];
+
+    if (isNewLogin) {
+      sessionToken = issueSession_('ADMIN', adminName);
+      writeLog_('ADMIN', adminName, 'LOGIN_SUCCESS', 'เข้าสู่ระบบ Admin Dashboard เดือน: ' + (selectedMonth || '-'), ipAddress, deviceInfo);
+    }
 
     var finalResult = {
       success: true,
@@ -1741,7 +1821,8 @@ function getAdminDashboardData(adminName, adminPin, selectedMonth, ipAddress, de
       announcements: announcements,
       announcementStats: announcementStats,
       accessList: accessList,
-      systemVersionInfo: getSystemVersionInfo()
+      systemVersionInfo: getSystemVersionInfo(),
+      sessionToken: sessionToken
     };
 
     return JSON.parse(JSON.stringify(finalResult));
@@ -1764,12 +1845,12 @@ var USER_MAPPING_DATABASE_ID = '12Y62ZJ1iGAYl55u3hcp26PATNAadHf0Kf0bRdFxFl9Y';
 var USER_MAPPING_HISTORY_SHEET = 'User_Mapping_History';
 var USER_MAPPING_HISTORY_HEADERS = ['Snapshot Date', 'ID TikTok', 'User Name', 'TikTok URL', 'Assigned VJ', 'Team', 'เหรียญวันนี้', 'เหรียญเดือนนี้', 'Last Updated', 'Uploaded By', 'Total Days'];
 
-function getUserMappingDatabase() {
+function getUserMappingDatabase_() {
   return SpreadsheetApp.openById(USER_MAPPING_DATABASE_ID);
 }
 
-function getOrCreateUserMappingSheet(spreadsheet) {
-  var ss = spreadsheet || getUserMappingDatabase();
+function getOrCreateUserMappingSheet_(spreadsheet) {
+  var ss = spreadsheet || getUserMappingDatabase_();
   var sheet = ss.getSheetByName('User_Mapping');
   if (!sheet) {
     sheet = ss.insertSheet('User_Mapping');
@@ -1781,8 +1862,8 @@ function getOrCreateUserMappingSheet(spreadsheet) {
   return sheet;
 }
 
-function getOrCreateUserMappingHistorySheet(spreadsheet) {
-  var ss = spreadsheet || getUserMappingDatabase();
+function getOrCreateUserMappingHistorySheet_(spreadsheet) {
+  var ss = spreadsheet || getUserMappingDatabase_();
   var sheet = ss.getSheetByName(USER_MAPPING_HISTORY_SHEET);
   if (!sheet) {
     sheet = ss.insertSheet(USER_MAPPING_HISTORY_SHEET);
@@ -1793,35 +1874,35 @@ function getOrCreateUserMappingHistorySheet(spreadsheet) {
   return sheet;
 }
 
-function userMappingSnapshotDate() {
+function userMappingSnapshotDate_() {
   return Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd');
 }
 
-function userMappingHistoryRow(snapshotDate, row) {
-  return [snapshotDate, cleanStr(row[0]), cleanStr(row[1]), cleanStr(row[2]), cleanStr(row[3]), cleanStr(row[4]), row[5], row[6], row[7], cleanStr(row[8]), row[9]];
+function userMappingHistoryRow_(snapshotDate, row) {
+  return [snapshotDate, cleanStr_(row[0]), cleanStr_(row[1]), cleanStr_(row[2]), cleanStr_(row[3]), cleanStr_(row[4]), row[5], row[6], row[7], cleanStr_(row[8]), row[9]];
 }
 
 // Archive every current mapping once per day. Subsequent edits update that day's snapshot,
 // while earlier dates remain immutable and A:J in User_Mapping remain unchanged.
-function archiveUserMappingDailySnapshot(spreadsheet, liveRows) {
+function archiveUserMappingDailySnapshot_(spreadsheet, liveRows) {
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
-    var history = getOrCreateUserMappingHistorySheet(spreadsheet);
+    var history = getOrCreateUserMappingHistorySheet_(spreadsheet);
     var historyData = history.getDataRange().getValues();
-    var snapshotDate = userMappingSnapshotDate();
+    var snapshotDate = userMappingSnapshotDate_();
     var existing = Object.create(null);
     for (var i = 1; i < historyData.length; i++) {
-      var id = cleanStr(historyData[i][1]).toLowerCase();
-      if (id) existing[cleanStr(historyData[i][0]) + '|' + id] = i + 1;
+      var id = cleanStr_(historyData[i][1]).toLowerCase();
+      if (id) existing[cleanStr_(historyData[i][0]) + '|' + id] = i + 1;
     }
     var newRows = [];
     for (var r = 1; r < liveRows.length; r++) {
       var row = liveRows[r];
-      var id = cleanStr(row[0]);
+      var id = cleanStr_(row[0]);
       if (!id) continue;
       var key = snapshotDate + '|' + id.toLowerCase();
-      if (!existing[key]) newRows.push(userMappingHistoryRow(snapshotDate, row));
+      if (!existing[key]) newRows.push(userMappingHistoryRow_(snapshotDate, row));
     }
     if (newRows.length) {
       history.getRange(history.getLastRow() + 1, 1, newRows.length, USER_MAPPING_HISTORY_HEADERS.length).setValues(newRows);
@@ -1831,36 +1912,36 @@ function archiveUserMappingDailySnapshot(spreadsheet, liveRows) {
   }
 }
 
-function archiveUserMappingDailySnapshotJob() {
-  var database = getUserMappingDatabase();
-  var sheet = getOrCreateUserMappingSheet(database);
+function archiveUserMappingDailySnapshotJob_() {
+  var database = getUserMappingDatabase_();
+  var sheet = getOrCreateUserMappingSheet_(database);
   var data = sheet.getDataRange().getValues();
-  if (data.length > 1) archiveUserMappingDailySnapshot(database, data);
+  if (data.length > 1) archiveUserMappingDailySnapshot_(database, data);
 }
 
-function installUserMappingDailyArchiveTrigger() {
-  var handler = 'archiveUserMappingDailySnapshotJob';
+function installUserMappingDailyArchiveTrigger_() {
+  var handler = 'archiveUserMappingDailySnapshotJob_';
   var triggers = ScriptApp.getProjectTriggers();
   var exists = triggers.some(function(trigger) { return trigger.getHandlerFunction() === handler; });
   if (!exists) ScriptApp.newTrigger(handler).timeBased().everyDays(1).atHour(1).inTimezone('Asia/Bangkok').create();
   return { success: true, message: exists ? 'มี Trigger สำรองรายวันอยู่แล้ว' : 'ติดตั้ง Trigger สำรอง User Mapping รายวันเวลา 01:00 แล้ว' };
 }
 
-function upsertUserMappingDailySnapshot(spreadsheet, mappingData) {
+function upsertUserMappingDailySnapshot_(spreadsheet, mappingData) {
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
-    var history = getOrCreateUserMappingHistorySheet(spreadsheet);
-    var snapshotDate = userMappingSnapshotDate();
-    var id = cleanStr(mappingData.tiktokId);
+    var history = getOrCreateUserMappingHistorySheet_(spreadsheet);
+    var snapshotDate = userMappingSnapshotDate_();
+    var id = cleanStr_(mappingData.tiktokId);
     if (!id) return;
     var values = history.getDataRange().getValues();
     var key = snapshotDate + '|' + id.toLowerCase();
     var target = -1;
     for (var i = 1; i < values.length; i++) {
-      if (cleanStr(values[i][0]) + '|' + cleanStr(values[i][1]).toLowerCase() === key) { target = i + 1; break; }
+      if (cleanStr_(values[i][0]) + '|' + cleanStr_(values[i][1]).toLowerCase() === key) { target = i + 1; break; }
     }
-    var snapshot = [snapshotDate, id, cleanStr(mappingData.userName), cleanStr(mappingData.tiktokUrl), cleanStr(mappingData.assignedVJ), cleanStr(mappingData.team), mappingData.coinsToday || 0, mappingData.coinsMonth || 0, Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss'), cleanStr(mappingData.uploadedBy), mappingData.totalDays || 0];
+    var snapshot = [snapshotDate, id, cleanStr_(mappingData.userName), cleanStr_(mappingData.tiktokUrl), cleanStr_(mappingData.assignedVJ), cleanStr_(mappingData.team), mappingData.coinsToday || 0, mappingData.coinsMonth || 0, Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss'), cleanStr_(mappingData.uploadedBy), mappingData.totalDays || 0];
     if (target > 1) history.getRange(target, 1, 1, snapshot.length).setValues([snapshot]);
     else history.appendRow(snapshot);
   } finally {
@@ -1886,8 +1967,8 @@ var USER_MAPPING_AVATAR_SHEET = 'User_Mapping_Avatars';
 var USER_MAPPING_AVATAR_FOLDER_PROPERTY = 'ACE_USER_MAPPING_AVATAR_FOLDER_ID';
 var USER_MAPPING_AVATAR_HEADERS = ['TikTok ID', 'Drive File ID', 'MIME Type', 'Cached At', 'Source URL'];
 
-function getOrCreateUserMappingAvatarSheet(spreadsheet) {
-  var ss = spreadsheet || getUserMappingDatabase();
+function getOrCreateUserMappingAvatarSheet_(spreadsheet) {
+  var ss = spreadsheet || getUserMappingDatabase_();
   var sheet = ss.getSheetByName(USER_MAPPING_AVATAR_SHEET);
   if (!sheet) {
     sheet = ss.insertSheet(USER_MAPPING_AVATAR_SHEET);
@@ -1898,7 +1979,7 @@ function getOrCreateUserMappingAvatarSheet(spreadsheet) {
   return sheet;
 }
 
-function getUserMappingAvatarFolder() {
+function getUserMappingAvatarFolder_() {
   var props = PropertiesService.getScriptProperties();
   var folderId = props.getProperty(USER_MAPPING_AVATAR_FOLDER_PROPERTY);
   if (folderId) {
@@ -1909,36 +1990,40 @@ function getUserMappingAvatarFolder() {
   return folder;
 }
 
-function authorizeUserMappingAvatarCache() {
-  getUserMappingDatabase();
-  getOrCreateUserMappingAvatarSheet();
-  getUserMappingAvatarFolder();
+function authorizeUserMappingAvatarCache_() {
+  getUserMappingDatabase_();
+  getOrCreateUserMappingAvatarSheet_();
+  getUserMappingAvatarFolder_();
   UrlFetchApp.fetch('https://unavatar.io/', { muteHttpExceptions: true, followRedirects: true });
   return 'Avatar cache authorization ready. Drive folder is private by default.';
 }
 
-function getUserMappingAvatarData(avatarIds, userName, userType) {
+function getUserMappingAvatarData(avatarIds, userName, userType, sessionToken, ipAddress) {
   try {
-    var ids = Array.isArray(avatarIds) ? avatarIds.map(function(id) { return cleanStr(id); }).filter(Boolean).slice(0, 10) : [];
+    var auth = requireSession_(sessionToken, null, ipAddress);
+    if (!auth.success) return { success: false, message: auth.message, avatars: {} };
+    userType = auth.session.userType;
+    userName = auth.session.userName;
+    var ids = Array.isArray(avatarIds) ? avatarIds.map(function(id) { return cleanStr_(id); }).filter(Boolean).slice(0, 10) : [];
     if (!ids.length) return { success: true, avatars: {} };
-    var database = getUserMappingDatabase();
-    var mappingSheet = getOrCreateUserMappingSheet(database);
+    var database = getUserMappingDatabase_();
+    var mappingSheet = getOrCreateUserMappingSheet_(database);
     var mappingRows = mappingSheet.getDataRange().getValues();
-    var cleanType = cleanStr(userType).toUpperCase();
-    var cleanUser = cleanStr(userName).toLowerCase();
+    var cleanType = cleanStr_(userType).toUpperCase();
+    var cleanUser = cleanStr_(userName).toLowerCase();
     if (cleanType !== 'ADMIN' && cleanType !== 'VJ') return { success: false, message: 'ไม่สามารถตรวจสอบสิทธิ์โหลดภาพได้', avatars: {} };
     var allowed = Object.create(null);
     for (var r = 1; r < mappingRows.length; r++) {
-      var id = cleanStr(mappingRows[r][0]);
-      var assigned = cleanStr(mappingRows[r][3]).toLowerCase();
+      var id = cleanStr_(mappingRows[r][0]);
+      var assigned = cleanStr_(mappingRows[r][3]).toLowerCase();
       if (id && (cleanType === 'ADMIN' || assigned === cleanUser)) allowed[id.toLowerCase()] = id;
     }
     var historySheetForAccess = database.getSheetByName(USER_MAPPING_HISTORY_SHEET);
     if (cleanType === 'VJ' && historySheetForAccess) {
       var historicalRows = historySheetForAccess.getDataRange().getValues();
       for (var hr = 1; hr < historicalRows.length; hr++) {
-        var historicalId = cleanStr(historicalRows[hr][1]);
-        var historicalVj = cleanStr(historicalRows[hr][4]).toLowerCase();
+        var historicalId = cleanStr_(historicalRows[hr][1]);
+        var historicalVj = cleanStr_(historicalRows[hr][4]).toLowerCase();
         if (historicalId && historicalVj === cleanUser) allowed[historicalId.toLowerCase()] = historicalId;
       }
     }
@@ -1949,24 +2034,24 @@ function getUserMappingAvatarData(avatarIds, userName, userType) {
       var headers = vjValues[0] || [];
       var stageCol = 1, idCol = 7;
       for (var c = 0; c < headers.length; c++) {
-        var h = cleanStr(headers[c]).toUpperCase().replace(/[\s_-]+/g, '');
+        var h = cleanStr_(headers[c]).toUpperCase().replace(/[\s_-]+/g, '');
         if (h === 'STGENAME' || h === 'STAGENAME' || h === 'ชื่อการแสดง') stageCol = c;
         if (h === 'IDTIKTOK' || h === 'TIKTOKID' || h === 'TIKTOK') idCol = c;
       }
       for (var v = 1; v < vjValues.length; v++) {
-        var stage = cleanStr(vjValues[v][stageCol]);
-        var vjId = cleanStr(vjValues[v][idCol]);
+        var stage = cleanStr_(vjValues[v][stageCol]);
+        var vjId = cleanStr_(vjValues[v][idCol]);
         if (vjId && (cleanType === 'ADMIN' || stage.toLowerCase() === cleanUser)) allowed[vjId.toLowerCase()] = vjId;
       }
     }
     var requested = Object.create(null);
     ids.forEach(function(id) { if (allowed[id.toLowerCase()]) requested[id.toLowerCase()] = allowed[id.toLowerCase()]; });
-    var cacheSheet = getOrCreateUserMappingAvatarSheet(database);
+    var cacheSheet = getOrCreateUserMappingAvatarSheet_(database);
     var cacheRows = cacheSheet.getDataRange().getValues();
     var cacheMap = Object.create(null);
     for (var k = 1; k < cacheRows.length; k++) {
-      var cacheId = cleanStr(cacheRows[k][0]).toLowerCase();
-      if (cacheId) cacheMap[cacheId] = { rowIndex: k + 1, fileId: cleanStr(cacheRows[k][1]), mimeType: cleanStr(cacheRows[k][2]) };
+      var cacheId = cleanStr_(cacheRows[k][0]).toLowerCase();
+      if (cacheId) cacheMap[cacheId] = { rowIndex: k + 1, fileId: cleanStr_(cacheRows[k][1]), mimeType: cleanStr_(cacheRows[k][2]) };
     }
     var result = {}, newCacheRows = [], updates = [];
     var folder = null;
@@ -1980,15 +2065,15 @@ function getUserMappingAvatarData(avatarIds, userName, userType) {
         try { blob = DriveApp.getFileById(cached.fileId).getBlob(); } catch (e) { blob = null; }
       }
       if (!blob) {
-        var sourceUrl = getProfilePicUrl(canonicalId, canonicalId);
+        var sourceUrl = getProfilePicUrl_(canonicalId, canonicalId);
         if (!sourceUrl || sourceUrl.indexOf('ui-avatars.com') !== -1) return;
         var response = UrlFetchApp.fetch(sourceUrl, { muteHttpExceptions: true, followRedirects: true, headers: { 'User-Agent': 'Mozilla/5.0 ACEContentPortal/1.0' } });
         var status = response.getResponseCode();
-        var mimeType = cleanStr(response.getHeaders()['Content-Type'] || response.getHeaders()['content-type']).split(';')[0].toLowerCase();
+        var mimeType = cleanStr_(response.getHeaders()['Content-Type'] || response.getHeaders()['content-type']).split(';')[0].toLowerCase();
         if (status < 200 || status >= 300 || !/^image\/(jpeg|png|webp|gif)$/.test(mimeType)) return;
         blob = response.getBlob().setContentType(mimeType);
         if (blob.getBytes().length > 1500000) return;
-        if (!folder) folder = getUserMappingAvatarFolder();
+        if (!folder) folder = getUserMappingAvatarFolder_();
         var safeName = canonicalId.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 80) || 'avatar';
         var file = folder.createFile(blob.setName(safeName + '.' + (mimeType.split('/')[1] || 'img')));
         var cacheRow = [canonicalId, file.getId(), mimeType, Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss'), sourceUrl];
@@ -2005,16 +2090,20 @@ function getUserMappingAvatarData(avatarIds, userName, userType) {
   }
 }
 
-function getUserMappingData(userName, userType) {
+function getUserMappingData(userName, userType, sessionToken, ipAddress) {
   try {
-    var database = getUserMappingDatabase();
-    var sheet = getOrCreateUserMappingSheet(database);
+    var auth = requireSession_(sessionToken, null, ipAddress);
+    if (!auth.success) return { success: false, message: auth.message, list: [], historyList: [] };
+    userName = auth.session.userName;
+    userType = auth.session.userType;
+    var database = getUserMappingDatabase_();
+    var sheet = getOrCreateUserMappingSheet_(database);
     var data = sheet.getDataRange().getValues();
     if (!data || !data.length) data = [[]];
-    if (data.length > 1) archiveUserMappingDailySnapshot(database, data);
-    var historySheet = getOrCreateUserMappingHistorySheet(database);
+    if (data.length > 1) archiveUserMappingDailySnapshot_(database, data);
+    var historySheet = getOrCreateUserMappingHistorySheet_(database);
     var historyData = historySheet.getDataRange().getValues();
-    var todayStr = userMappingSnapshotDate();
+    var todayStr = userMappingSnapshotDate_();
     var activeSs = SpreadsheetApp.getActiveSpreadsheet();
     var vjSheet = activeSs.getSheetByName('vj mc all') || activeSs.getSheetByName('VJ MC ALL') || activeSs.getSheetByName('vj_mc_all');
     var vjProfileMap = Object.create(null);
@@ -2023,25 +2112,25 @@ function getUserMappingData(userName, userType) {
       var hRow = vjValues[0] || [];
       var stageIdx = 1, tiktokIdx = 7;
       for (var c = 0; c < hRow.length; c++) {
-        var hStr = cleanStr(hRow[c]).toUpperCase().replace(/[\s_-]+/g, '');
+        var hStr = cleanStr_(hRow[c]).toUpperCase().replace(/[\s_-]+/g, '');
         if (hStr === 'STGENAME' || hStr === 'STAGENAME' || hStr === 'ชื่อการแสดง') stageIdx = c;
         if (hStr === 'IDTIKTOK' || hStr === 'TIKTOKID' || hStr === 'TIKTOK') tiktokIdx = c;
       }
       for (var v = 1; v < vjValues.length; v++) {
-        var stage = cleanStr(vjValues[v][stageIdx]);
-        if (stage) vjProfileMap[stage.toLowerCase()] = tiktokIdx >= 0 ? cleanStr(vjValues[v][tiktokIdx]) : '';
+        var stage = cleanStr_(vjValues[v][stageIdx]);
+        if (stage) vjProfileMap[stage.toLowerCase()] = tiktokIdx >= 0 ? cleanStr_(vjValues[v][tiktokIdx]) : '';
       }
     }
 
-    var cleanUser = cleanStr(userName).toLowerCase();
-    var cleanType = cleanStr(userType).toUpperCase();
+    var cleanUser = cleanStr_(userName).toLowerCase();
+    var cleanType = cleanStr_(userType).toUpperCase();
     function makeItem(row, index, isHistory) {
       var offset = isHistory ? 1 : 0;
-      var tiktokId = cleanStr(row[offset]);
-      var uName = cleanStr(row[offset + 1]);
-      var tiktokUrl = cleanStr(row[offset + 2]);
-      var assignedVJ = cleanStr(row[offset + 3]);
-      var team = cleanStr(row[offset + 4]);
+      var tiktokId = cleanStr_(row[offset]);
+      var uName = cleanStr_(row[offset + 1]);
+      var tiktokUrl = cleanStr_(row[offset + 2]);
+      var assignedVJ = cleanStr_(row[offset + 3]);
+      var team = cleanStr_(row[offset + 4]);
       var updatedRaw = row[offset + 7];
       var updatedText = '-';
       var updatedDateOnly = '';
@@ -2050,22 +2139,22 @@ function getUserMappingData(userName, userType) {
           updatedText = Utilities.formatDate(updatedRaw, 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
           updatedDateOnly = Utilities.formatDate(updatedRaw, 'Asia/Bangkok', 'yyyy-MM-dd');
         } else {
-          updatedText = cleanStr(updatedRaw);
+          updatedText = cleanStr_(updatedRaw);
           var match = updatedText.match(/^(\d{4}-\d{2}-\d{2})/);
           if (match) updatedDateOnly = match[1];
         }
       }
-      var snapshotDate = isHistory ? cleanStr(row[0]) : updatedDateOnly;
+      var snapshotDate = isHistory ? cleanStr_(row[0]) : updatedDateOnly;
       return {
         rowIndex: isHistory ? null : index + 1,
         snapshotDate: snapshotDate,
         tiktokId: tiktokId, userName: uName, tiktokUrl: tiktokUrl,
         assignedVJ: assignedVJ, team: team,
-        coinsToday: parseDiamondVal(row[offset + 5]), coinsMonth: parseDiamondVal(row[offset + 6]),
-        updatedDate: updatedText, recordedBy: cleanStr(row[offset + 8]), totalDays: parseDiamondVal(row[offset + 9]),
-        userAvatar: getProfilePicUrl(tiktokId, uName || tiktokId),
+        coinsToday: parseDiamondVal_(row[offset + 5]), coinsMonth: parseDiamondVal_(row[offset + 6]),
+        updatedDate: updatedText, recordedBy: cleanStr_(row[offset + 8]), totalDays: parseDiamondVal_(row[offset + 9]),
+        userAvatar: getProfilePicUrl_(tiktokId, uName || tiktokId),
         vjTikTokId: vjProfileMap[assignedVJ.toLowerCase()] || '',
-        vjAvatar: getProfilePicUrl(vjProfileMap[assignedVJ.toLowerCase()] || '', assignedVJ),
+        vjAvatar: getProfilePicUrl_(vjProfileMap[assignedVJ.toLowerCase()] || '', assignedVJ),
         isUpdatedToday: (isHistory ? snapshotDate : updatedDateOnly) === todayStr
       };
     }
@@ -2094,18 +2183,22 @@ function getUserMappingData(userName, userType) {
 /**
  * บันทึกหรืออัปเดตข้อมูล User Mapping (สำหรับ Admin)
  */
-function saveUserMappingRecord(mappingData, adminName) {
+function saveUserMappingRecord(mappingData, adminName, sessionToken, ipAddress) {
   try {
-    var database = getUserMappingDatabase();
-    var sheet = getOrCreateUserMappingSheet(database);
+    var auth = requireSession_(sessionToken, 'ADMIN', ipAddress);
+    if (!auth.success) return auth;
+    adminName = auth.session.userName;
+    if (!mappingData || typeof mappingData !== 'object') return { success: false, message: 'ข้อมูล User Mapping ไม่ถูกต้อง' };
+    var database = getUserMappingDatabase_();
+    var sheet = getOrCreateUserMappingSheet_(database);
     var nowStr = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
     var recorder = adminName || 'Admin';
 
-    var tiktokId = cleanStr(mappingData.tiktokId);
-    var uName = cleanStr(mappingData.userName);
-    var tiktokUrl = cleanStr(mappingData.tiktokUrl);
-    var assignedVJ = cleanStr(mappingData.assignedVJ);
-    var team = cleanStr(mappingData.team);
+    var tiktokId = safeSheetText_(mappingData.tiktokId);
+    var uName = safeSheetText_(mappingData.userName);
+    var tiktokUrl = cleanStr_(mappingData.tiktokUrl);
+    var assignedVJ = safeSheetText_(mappingData.assignedVJ);
+    var team = safeSheetText_(mappingData.team);
     var coinsToday = mappingData.coinsToday;
     var coinsMonth = mappingData.coinsMonth;
     var totalDays = mappingData.totalDays;
@@ -2113,15 +2206,18 @@ function saveUserMappingRecord(mappingData, adminName) {
     if (!tiktokId || !uName || !assignedVJ) {
       return { success: false, message: 'โปรดระบุ ID TikTok, User Name และ Assigned VJ ให้ครบถ้วน' };
     }
+    if (tiktokId.length > 100 || uName.length > 150 || assignedVJ.length > 100 || team.length > 100) return { success: false, message: 'ข้อมูล User Mapping ยาวเกินกำหนด' };
+    if (tiktokUrl && !/^https:\/\/(?:[a-z0-9-]+\.)*tiktok\.com(?:\/|$)/i.test(tiktokUrl)) return { success: false, message: 'ลิงก์โปรไฟล์ต้องเป็น HTTPS ของ TikTok' };
 
     var data = sheet.getDataRange().getValues();
     var targetRow = -1;
 
     if (mappingData.rowIndex && Number(mappingData.rowIndex) > 1) {
       targetRow = Number(mappingData.rowIndex);
+      if (!Number.isInteger(targetRow) || targetRow > sheet.getLastRow()) return { success: false, message: 'ไม่พบบรรทัด User Mapping ที่ต้องการแก้ไข' };
     } else {
       for (var i = 1; i < data.length; i++) {
-        if (cleanStr(data[i][0]).toLowerCase() === tiktokId.toLowerCase()) {
+        if (cleanStr_(data[i][0]).toLowerCase() === tiktokId.toLowerCase()) {
           targetRow = i + 1;
           break;
         }
@@ -2145,8 +2241,8 @@ function saveUserMappingRecord(mappingData, adminName) {
       ]);
     }
 
-    upsertUserMappingDailySnapshot(database, { tiktokId: tiktokId, userName: uName, tiktokUrl: tiktokUrl, assignedVJ: assignedVJ, team: team, coinsToday: coinsToday, coinsMonth: coinsMonth, uploadedBy: recorder, totalDays: totalDays });
-    writeLog('ADMIN', adminName, 'USER_MAPPING_SAVE', 'บันทึก User Mapping ID TikTok: ' + tiktokId + ' ให้ VJ: ' + assignedVJ);
+    upsertUserMappingDailySnapshot_(database, { tiktokId: tiktokId, userName: uName, tiktokUrl: tiktokUrl, assignedVJ: assignedVJ, team: team, coinsToday: coinsToday, coinsMonth: coinsMonth, uploadedBy: recorder, totalDays: totalDays });
+    writeLog_('ADMIN', adminName, 'USER_MAPPING_SAVE', 'บันทึก User Mapping ID TikTok: ' + tiktokId + ' ให้ VJ: ' + assignedVJ);
 
     return { success: true, message: 'บันทึกข้อมูล User Mapping เรียบร้อยแล้ว' };
   } catch (err) {
@@ -2157,14 +2253,17 @@ function saveUserMappingRecord(mappingData, adminName) {
 /**
  * ลบข้อมูล User Mapping (สำหรับ Admin)
  */
-function deleteUserMappingRecord(rowIndex, adminName) {
+function deleteUserMappingRecord(rowIndex, adminName, sessionToken, ipAddress) {
   try {
-    var database = getUserMappingDatabase();
-    var sheet = getOrCreateUserMappingSheet(database);
+    var auth = requireSession_(sessionToken, 'ADMIN', ipAddress);
+    if (!auth.success) return auth;
+    adminName = auth.session.userName;
+    var database = getUserMappingDatabase_();
+    var sheet = getOrCreateUserMappingSheet_(database);
     var row = Number(rowIndex);
-    if (row > 1) {
+    if (Number.isInteger(row) && row > 1 && row <= sheet.getLastRow()) {
       sheet.deleteRow(row);
-      writeLog('ADMIN', adminName, 'USER_MAPPING_DELETE', 'ลบข้อมูลบรรทัดที่ ' + row);
+      writeLog_('ADMIN', adminName, 'USER_MAPPING_DELETE', 'ลบข้อมูลบรรทัดที่ ' + row);
       return { success: true, message: 'ลบรายการ User Mapping เรียบร้อยแล้ว' };
     }
     return { success: false, message: 'ไม่พบบรรทัดข้อมูลที่ต้องการลบ' };
