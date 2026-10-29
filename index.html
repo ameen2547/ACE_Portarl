@@ -12,6 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700;800&display=swap"
     rel="stylesheet">
+  
   <style>
     body {
       font-family: 'Kanit', sans-serif;
@@ -176,13 +177,89 @@
       #aceSidebar .ace-group-title { padding-top:.65rem; }
     }
 
-  </style>
+  
+    /* Mobile layout and touch support */
+    @media (max-width: 767px) {
+      html { -webkit-text-size-adjust: 100%; }
+      body.ace-shell, body.ace-shell.ace-sidebar-collapsed {
+        padding: 0 0 max(.75rem, env(safe-area-inset-bottom)) 0 !important;
+        overflow-x: hidden;
+      }
+      body.ace-session > header {
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 3.5rem;
+        padding: calc(.4rem + env(safe-area-inset-top)) .55rem .4rem 3.5rem !important;
+        margin-bottom: .65rem;
+        align-items: flex-start;
+        gap: .45rem;
+      }
+      body.ace-session > header > div:last-child {
+        width: 100%;
+        justify-content: flex-start;
+        align-items: center;
+        gap: .4rem;
+      }
+      body.ace-session > header > div:last-child > * { max-width: 100%; }
+      body.ace-session > header .shsojvp { white-space: nowrap; }
+      body:not(.ace-session) #aceMenuToggle { display: none !important; }
+      #aceMenuToggle {
+        top: max(.45rem, env(safe-area-inset-top));
+        left: max(.55rem, env(safe-area-inset-left));
+        width: 2.75rem;
+        height: 2.75rem;
+        touch-action: manipulation;
+      }
+      #aceSidebar { height: 100vh; height: 100dvh; padding-bottom: env(safe-area-inset-bottom); }
+      body.ace-session main { min-width: 0; }
+      body.ace-session main > * { min-width: 0; }
+      body.ace-session .overflow-x-auto {
+        max-width: 100%;
+        overscroll-behavior-x: contain;
+        -webkit-overflow-scrolling: touch;
+      }
+      body.ace-session .overflow-x-auto > table { min-width: 640px; }
+      body.ace-session input:not([type=checkbox]):not([type=radio]),
+      body.ace-session textarea,
+      body.ace-session select:not(.ace-native-select),
+      .ace-select-search { font-size: 16px; }
+      body.ace-session button:not(.h-8):not(.h-9) { min-height: 44px; }
+      body.ace-session button.h-8, body.ace-session button.w-8 { min-height: 2rem; }
+      body.ace-session .ace-nav-btn { min-height: 46px; }
+      #userMapModal, #customAlertModal, #confirmLogoutModal, #systemVersionModal,
+      #annPopupModal, #attModal, #exportModal {
+        box-sizing: border-box;
+        align-items: flex-start;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding: calc(.5rem + env(safe-area-inset-top)) .5rem calc(.5rem + env(safe-area-inset-bottom));
+      }
+      #userMapModal > div, #customAlertModal > div, #confirmLogoutModal > div,
+      #systemVersionModal > div, #annPopupModal > div, #attModal > div, #exportModal > div {
+        max-height: calc(100vh - 1rem);
+        max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 1rem);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        margin-top: auto;
+        margin-bottom: auto;
+      }
+      body.ace-session .ace-section-heading { align-items: flex-start; }
+    }
+
+    @media (max-width: 380px) {
+      body.ace-session > header { padding-right: .4rem !important; padding-left: 3.25rem !important; }
+      body.ace-session > header > div:last-child { gap: .3rem; }
+      body.ace-session .grid.grid-cols-2 { gap: .55rem; }
+      body.ace-session .grid.grid-cols-2 > * { min-width: 0; }
+      #aceSidebar, body.ace-sidebar-collapsed #aceSidebar { width: min(88vw, 300px); }
+    }
+</style>
 </head>
 
 <body class="ace-shell bg-slate-50 min-h-screen p-3 md:p-6 flex flex-col items-center text-slate-800">
 
 
-  <button id="aceMenuToggle" type="button" onclick="toggleAceSidebar()" aria-label="เปิดเมนู" class="hidden fixed top-2 left-2 z-[70] w-11 h-11 rounded-xl bg-[#0d1527] text-white text-xl shadow-lg items-center justify-center">☰</button>
+  <button id="aceMenuToggle" type="button" onclick="toggleAceSidebar()" aria-label="เปิดเมนู" aria-controls="aceSidebar" aria-expanded="false" class="hidden fixed top-2 left-2 z-[70] w-11 h-11 rounded-xl bg-[#0d1527] text-white text-xl shadow-lg items-center justify-center">☰</button>
   <div id="aceSidebarBackdrop" onclick="toggleAceSidebar(false)"></div>
   <aside id="aceSidebar" aria-label="เมนูหลัก">
     <div class="ace-brand-row px-5 pt-5 pb-4 border-b border-white/10 flex items-center justify-between gap-3">
@@ -3785,6 +3862,12 @@ function deleteUserMapRow(rowIndex) {
         var open = typeof force === 'boolean' ? force : !side.classList.contains('open');
         side.classList.toggle('open', open);
         if (backdrop) backdrop.classList.toggle('open', open);
+        var menuButton = document.getElementById('aceMenuToggle');
+        if (menuButton) {
+          menuButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+          menuButton.setAttribute('aria-label', open ? 'ปิดเมนู' : 'เปิดเมนู');
+          menuButton.textContent = open ? '×' : '☰';
+        }
         return;
       }
       // Desktop menu navigation calls toggleAceSidebar(false) to close the drawer; it must not undo collapse state.
