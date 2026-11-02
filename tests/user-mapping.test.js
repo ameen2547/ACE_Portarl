@@ -172,14 +172,18 @@ test('inline frontend JavaScript parses without syntax errors', () => {
 
 test('both User Mapping views provide report filters, summary cards, and history tabs', () => {
   for (const id of [
-    'vjUserMapTeamFilter', 'vjUserMapDateFrom', 'vjUserMapDateTo', 'vjUmMetricUsers', 'vjUserMapTabHistory',
-    'admUserMapTeamFilter', 'admUserMapDateFrom', 'admUserMapDateTo', 'admUmMetricUsers', 'admUserMapTabHistory'
+    'vjUserMapTeamFilter', 'vjUserMapDateFrom', 'vjUserMapDateTo', 'vjUserMapOverviewPanel', 'vjUserMapInsightGrid', 'vjUserMapTabHistory', 'vjUserMapTabVjTeams',
+    'admUserMapTeamFilter', 'admUserMapDateFrom', 'admUserMapDateTo', 'admUserMapOverviewPanel', 'admUserMapInsightGrid', 'admUserMapTabHistory', 'admUserMapTabVjTeams',
+    'userMapVjDetailModal', 'userMapVjDetailTabGifters', 'userMapVjDetailTabGifts'
   ]) {
     assert.ok(frontendSource.includes('id="' + id + '"'), 'missing report UI element: ' + id);
   }
   assert.ok(frontendSource.includes("setUserMapQuickRange('VJ','week')"));
   assert.ok(frontendSource.includes("setUserMapQuickRange('ADMIN','month')"));
   assert.ok(frontendSource.includes('function renderUserMapTeamSummary'));
+  assert.ok(frontendSource.includes('function renderUserMapOverview'));
+  assert.ok(frontendSource.includes('function renderUserMapVjTeams'));
+  assert.ok(frontendSource.includes('function openUserMapVjDetail'));
   assert.ok(frontendSource.includes('var USER_MAPPING_PAGE_SIZE = 50;'));
   assert.ok(frontendSource.includes('id="vjUserMapPageText"'));
   assert.ok(frontendSource.includes('id="admUserMapPageText"'));
@@ -268,6 +272,27 @@ test('VJ Gift_Details report only returns own VJ rows and own mapped rows with b
   assert.deepEqual(Array.from(result.list, row => row.tiktokId), ['@giver-a', '@giver-c']);
   assert.equal(result.summary.totalCoins, 6);
   assert.equal(result.list.some(row => row.tiktokId === '@giver-b'), false);
+});
+
+test('VJ detail report filters Gift_Details by VJ and returns aggregated top gifters', () => {
+  const gifts = [
+    giftHeader,
+    ['r1', '2026-10-31 10:00:00', 'R1', 'Kim', 'Gifter A', '@giver-a', 'Bound', 'Rose', 2, 1, 2, 'c1', 'uploader'],
+    ['r2', '2026-10-31 11:00:00', 'R1', 'Lee', 'Gifter A', '@giver-a', 'Bound', 'Lion', 1, 10, 10, 'c2', 'uploader'],
+    ['r3', '2026-10-31 12:00:00', 'R2', '', 'Gifter B', '@mapped-user', 'Bound', 'Heart', 4, 1, 4, 'c3', 'uploader']
+  ];
+  const mappings = [
+    liveHeader,
+    ['@mapped-user', 'Mapped User', '', 'Kim', 'Team A', 0, 0, TODAY, 'Admin', 0]
+  ];
+  const harness = createGiftReportHarness(gifts, mappings, 'ADMIN', 'Admin');
+  const result = harness.context.getGiftDetailsData('admin-token', '127.0.0.1', { vj: 'Kim' });
+
+  assert.equal(result.totalRecords, 2);
+  assert.deepEqual(Array.from(result.list, row => row.vj || row.mappedVJ), ['Kim', 'Kim']);
+  assert.equal(result.summaryByGifter.length, 2);
+  assert.equal(result.summaryByGifter[0].tiktokId, '@mapped-user');
+  assert.equal(result.summaryByGifter[0].totalCoins, 4);
 });
 
 test('VJ Gift_Details rows do not reveal User Mapping details owned by a different VJ', () => {

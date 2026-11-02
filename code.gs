@@ -2375,6 +2375,7 @@ function getGiftDetailsData(sessionToken, ipAddress, options) {
     var dateFrom = /^\d{4}-\d{2}-\d{2}$/.test(cleanStr_(options.dateFrom)) ? cleanStr_(options.dateFrom) : '';
     var dateTo = /^\d{4}-\d{2}-\d{2}$/.test(cleanStr_(options.dateTo)) ? cleanStr_(options.dateTo) : '';
     var teamFilter = cleanStr_(options.team).toLowerCase();
+    var vjFilter = cleanStr_(options.vj).toLowerCase();
     var query = cleanStr_(options.query).toLowerCase().slice(0, 80);
 
     // Open the external spreadsheet once per request and read each tab in one batch.
@@ -2416,6 +2417,7 @@ function getGiftDetailsData(sessionToken, ipAddress, options) {
     var rows = [];
     var uniqueGifters = Object.create(null);
     var mappingTotals = Object.create(null);
+    var gifterTotals = Object.create(null);
     var giftNamesSeen = Object.create(null);
     var totalCoins = 0;
     var mappedRecords = 0;
@@ -2436,6 +2438,8 @@ function getGiftDetailsData(sessionToken, ipAddress, options) {
         // but never expose another mapping's name, team, or aggregate.
         if (mapped && mapped.assignedVJ.toLowerCase() !== userKey) mapped = null;
       }
+      var effectiveVj = vj || (mapped && mapped.assignedVJ) || '';
+      if (vjFilter && effectiveVj.toLowerCase() !== vjFilter) continue;
       if (dateFrom && (!eventDate || eventDate < dateFrom)) continue;
       if (dateTo && (!eventDate || eventDate > dateTo)) continue;
       var team = mapped ? mapped.team : '';
@@ -2459,7 +2463,17 @@ function getGiftDetailsData(sessionToken, ipAddress, options) {
         aggregate.eventCount++;
       }
       var gifterKey = normalizeGiftMappingKey_(tiktokId) || gifterName.toLowerCase();
-      if (gifterKey) uniqueGifters[gifterKey] = true;
+      if (gifterKey) {
+        uniqueGifters[gifterKey] = true;
+        var gifterAggregate = gifterTotals[gifterKey] || (gifterTotals[gifterKey] = {
+          tiktokId: tiktokId,
+          gifterName: gifterName || tiktokId,
+          totalCoins: 0,
+          eventCount: 0
+        });
+        gifterAggregate.totalCoins += coins;
+        gifterAggregate.eventCount++;
+      }
       rows.push({
         sourceRow: r + 1,
         eventTime: eventTime,
@@ -2493,10 +2507,13 @@ function getGiftDetailsData(sessionToken, ipAddress, options) {
     pageRows.forEach(function(item) { delete item.sourceRow; });
     var topMappings = Object.keys(mappingTotals).map(function(key) { return mappingTotals[key]; });
     topMappings.sort(function(a, b) { return b.totalCoins - a.totalCoins; });
+    var topGifters = Object.keys(gifterTotals).map(function(key) { return gifterTotals[key]; });
+    topGifters.sort(function(a, b) { return b.totalCoins - a.totalCoins; });
     return {
       success: true,
       list: pageRows,
       summaryByMapping: topMappings.slice(0, 30),
+      summaryByGifter: topGifters.slice(0, 30),
       summary: { totalCoins: totalCoins, eventCount: totalRecords, uniqueGifters: Object.keys(uniqueGifters).length, mappedRecords: mappedRecords },
       page: page,
       pageSize: pageSize,
