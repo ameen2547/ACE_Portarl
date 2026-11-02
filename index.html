@@ -213,6 +213,7 @@
     body.ace-sidebar-collapsed #aceSidebarLogout::before { content:'↪'; font-size:1rem; }
     body.ace-sidebar-collapsed #aceSidebar .ace-sidebar-footer { text-align:center; padding-left:.15rem; padding-right:.15rem; }
     #aceMenuToggle { display:none; }
+    .ace-mobile-user-nav { display:none; }
     .ace-session #vjNavigationTabs, .ace-session #adminNavigationTabs { display:none!important; }
     .ace-search-select { position:relative; width:100%; }
     .ace-search-select select.ace-native-select { position:absolute!important; width:1px!important; height:1px!important; opacity:0!important; pointer-events:none!important; left:0; bottom:0; }
@@ -356,6 +357,44 @@
       body.ace-session .grid.grid-cols-2 > * { min-width: 0; }
       #aceSidebar, body.ace-sidebar-collapsed #aceSidebar { width: min(88vw, 300px); }
     }
+
+    @media (max-width: 767px) {
+      body.ace-vj-session.ace-shell { padding-top: 0 !important; }
+      body.ace-vj-session > header { padding-left: .55rem !important; }
+      body.ace-vj-session #aceMenuToggle { display: none !important; }
+      body.ace-vj-session main#personalDashboardSection { padding-bottom: calc(5.25rem + env(safe-area-inset-bottom)) !important; }
+      body.ace-vj-session #aceMobileUserNav {
+        position: fixed;
+        inset: auto 0 0;
+        z-index: 50;
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        min-height: calc(4.15rem + env(safe-area-inset-bottom));
+        box-sizing: border-box;
+        padding: .35rem .35rem calc(.35rem + env(safe-area-inset-bottom));
+        border-top: 1px solid rgba(203,213,225,.85);
+        background: rgba(255,255,255,.96);
+        box-shadow: 0 -8px 24px rgba(15,23,42,.08);
+        backdrop-filter: blur(16px);
+      }
+      #aceMobileUserNav .ace-mobile-nav-button {
+        display: flex;
+        min-width: 0;
+        min-height: 3.35rem;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: .15rem;
+        border-radius: .8rem;
+        color: #64748b;
+        font-size: .61rem;
+        font-weight: 700;
+        line-height: 1.15;
+        touch-action: manipulation;
+      }
+      #aceMobileUserNav .ace-mobile-nav-button.active { background: #eef2ff; color: #4f46e5; }
+      #aceMobileUserNav .ace-mobile-nav-icon { font-size: 1.15rem; line-height: 1; }
+    }
 </style>
 </head>
 
@@ -379,6 +418,14 @@
       <div class="ace-footer-label px-3 pt-2 text-[10px] text-slate-500">ACE Content Portal</div>
     </div>
   </aside>
+
+  <nav id="aceMobileUserNav" class="ace-mobile-user-nav" aria-label="เมนูหลักสำหรับผู้ใช้">
+    <button type="button" class="ace-mobile-nav-button" data-view="perf" onclick="switchVJTab('perf')" aria-label="ยอด Target KPI"><span class="ace-mobile-nav-icon" aria-hidden="true">📊</span><span>KPI</span></button>
+    <button type="button" class="ace-mobile-nav-button" data-view="userMap" onclick="switchVJTab('userMap')" aria-label="User Mapping"><span class="ace-mobile-nav-icon" aria-hidden="true">👥</span><span>Mapping</span></button>
+    <button type="button" class="ace-mobile-nav-button" data-view="att" onclick="switchVJTab('att')" aria-label="เวลาเข้าออก"><span class="ace-mobile-nav-icon" aria-hidden="true">⏱️</span><span>เวลา</span></button>
+    <button type="button" class="ace-mobile-nav-button" data-view="ann" onclick="switchVJTab('ann')" aria-label="ประกาศข่าวสาร"><span class="ace-mobile-nav-icon" aria-hidden="true">📢</span><span>ข่าวสาร</span></button>
+    <button type="button" class="ace-mobile-nav-button" onclick="toggleAceSidebar()" aria-label="เปิดเมนูเพิ่มเติม"><span class="ace-mobile-nav-icon" aria-hidden="true">☰</span><span>เพิ่มเติม</span></button>
+  </nav>
 
   <!-- Loading Overlay -->
   <div id="loadingOverlay"
@@ -2478,7 +2525,20 @@
             : 'flex-1 min-w-[120px] py-2.5 rounded-xl font-bold text-xs text-slate-600 hover:bg-slate-100';
         }
       });
+      updateAceVjNavigation(tab);
       if (tab === 'userMap') loadUserMappingForVJ();
+    }
+
+    function updateAceVjNavigation(activeView) {
+      ['aceSidebarNav','aceMobileUserNav'].forEach(function(navId) {
+        var nav = document.getElementById(navId);
+        if (!nav) return;
+        Array.prototype.forEach.call(nav.querySelectorAll('[data-view]'), function(button) {
+          var active = button.getAttribute('data-view') === activeView;
+          button.classList.toggle('active', active);
+          button.setAttribute('aria-current', active ? 'page' : 'false');
+        });
+      });
     }
 
     function logoutVJ() {
@@ -4957,6 +5017,7 @@ function deleteUserMapRow(rowIndex) {
       var roleNode = document.getElementById('aceSidebarRole');
       var avatar = document.getElementById('aceSidebarAvatar');
       document.body.classList.toggle('ace-session', admin || vj);
+      document.body.classList.toggle('ace-vj-session', !admin && vj);
       if (nameNode) nameNode.textContent = profileName || 'ยังไม่ได้เข้าสู่ระบบ';
       if (roleNode) roleNode.textContent = admin ? 'ADMIN' : (vj ? 'VJ / MC' : 'ACE Content Portal');
       if (avatar) {
@@ -4994,6 +5055,7 @@ function deleteUserMapRow(rowIndex) {
       var activeKey = activeView ? activeView.replace('admView','').replace(/^./,function(c){return c.toLowerCase();}) : visibleVjView;
       var activeButton=nav.querySelector('[data-view="'+activeKey+'"]');
       if(activeButton) { activeButton.classList.add('active'); activeButton.setAttribute('aria-current','page'); }
+      if (vj) updateAceVjNavigation(activeKey);
       var mobileMenu=document.getElementById('aceMenuToggle'); if(mobileMenu && window.innerWidth < 768) mobileMenu.classList.remove('hidden');
     }
 

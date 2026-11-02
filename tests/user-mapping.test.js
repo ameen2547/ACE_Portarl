@@ -190,6 +190,17 @@ test('both User Mapping views provide report filters, summary cards, and history
   assert.ok(frontendSource.includes('function changeUserMapCurrentPage'));
 });
 
+test('VJ mobile navigation uses a safe-area-aware bottom bar and keeps all user views reachable', () => {
+  for (const view of ['perf', 'userMap', 'att', 'ann']) {
+    assert.ok(frontendSource.includes("onclick=\"switchVJTab('" + view + "')\""), 'missing mobile navigation action: ' + view);
+  }
+  assert.ok(frontendSource.includes('id="aceMobileUserNav"'));
+  assert.ok(frontendSource.includes("document.body.classList.toggle('ace-vj-session', !admin && vj)"));
+  assert.ok(frontendSource.includes('function updateAceVjNavigation'));
+  assert.ok(frontendSource.includes('env(safe-area-inset-bottom)'));
+  assert.ok(frontendSource.includes('body.ace-vj-session #aceMobileUserNav'));
+});
+
 function createGiftReportHarness(giftRows, mappingRows, sessionType, sessionName) {
   const reads = { databaseOpen: 0, giftRead: 0, mappingRead: 0, ranges: [] };
   function sheet(rows, type) {
