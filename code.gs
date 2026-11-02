@@ -2362,26 +2362,25 @@ function getGiftDetailsData(sessionToken, ipAddress, options) {
     var giftSheet = database.getSheetByName('Gift_Details');
     if (!giftSheet) return { success: false, message: 'ไม่พบชีต Gift_Details ในไฟล์ฐานข้อมูล User Mapping', list: [], summaryByMapping: [] };
     var lastRow = giftSheet.getLastRow();
-    var lastColumn = Math.max(13, giftSheet.getLastColumn());
     if (lastRow < 2) return { success: true, list: [], summaryByMapping: [], summary: { totalCoins: 0, eventCount: 0, uniqueGifters: 0, mappedRecords: 0 }, page: 1, pageSize: pageSize, totalPages: 0, totalRecords: 0 };
-    var giftRows = giftSheet.getRange(1, 1, lastRow, lastColumn).getValues();
+    // Only read B:K: the report does not need Record Key (A), Collection ID (L), or Uploaded By (M).
+    var giftRows = giftSheet.getRange(1, 2, lastRow, 10).getValues();
     var headers = giftRows[0] || [];
     var columns = {
-      recordKey: giftDetailsColumn_(headers, ['Record Key', 'RecordKey'], 0),
-      eventTime: giftDetailsColumn_(headers, ['Event Time', 'EventTime', 'Timestamp'], 1),
-      round: giftDetailsColumn_(headers, ['Round'], 2),
-      vj: giftDetailsColumn_(headers, ['VJ', 'Stage Name', 'StageName'], 3),
-      gifterName: giftDetailsColumn_(headers, ['Gifter Name', 'GifterName', 'User Name'], 4),
-      tiktokId: giftDetailsColumn_(headers, ['TikTok ID', 'TikTokID', 'ID TikTok'], 5),
-      bound: giftDetailsColumn_(headers, ['Bound'], 6),
-      giftName: giftDetailsColumn_(headers, ['Gift Name', 'GiftName', 'Gift'], 7),
-      quantity: giftDetailsColumn_(headers, ['Quantity', 'Qty'], 8),
-      unitPrice: giftDetailsColumn_(headers, ['Unit Price', 'UnitPrice', 'Price'], 9),
-      totalCoins: giftDetailsColumn_(headers, ['Total Coins', 'TotalCoins', 'Coins'], 10)
+      eventTime: giftDetailsColumn_(headers, ['Event Time', 'EventTime', 'Timestamp'], 0),
+      round: giftDetailsColumn_(headers, ['Round'], 1),
+      vj: giftDetailsColumn_(headers, ['VJ', 'Stage Name', 'StageName'], 2),
+      gifterName: giftDetailsColumn_(headers, ['Gifter Name', 'GifterName', 'User Name'], 3),
+      tiktokId: giftDetailsColumn_(headers, ['TikTok ID', 'TikTokID', 'ID TikTok'], 4),
+      bound: giftDetailsColumn_(headers, ['Bound'], 5),
+      giftName: giftDetailsColumn_(headers, ['Gift Name', 'GiftName', 'Gift'], 6),
+      quantity: giftDetailsColumn_(headers, ['Quantity', 'Qty'], 7),
+      unitPrice: giftDetailsColumn_(headers, ['Unit Price', 'UnitPrice', 'Price'], 8),
+      totalCoins: giftDetailsColumn_(headers, ['Total Coins', 'TotalCoins', 'Coins'], 9)
     };
     var mappingSheet = database.getSheetByName('User_Mapping');
     var mappingRows = mappingSheet && mappingSheet.getLastRow() > 1
-      ? mappingSheet.getRange(1, 1, mappingSheet.getLastRow(), Math.max(10, mappingSheet.getLastColumn())).getValues()
+      ? mappingSheet.getRange(1, 1, mappingSheet.getLastRow(), 5).getValues()
       : [];
     var mappingById = Object.create(null);
     for (var m = 1; m < mappingRows.length; m++) {

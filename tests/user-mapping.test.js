@@ -172,7 +172,7 @@ test('both User Mapping views provide report filters, summary cards, and history
 });
 
 function createGiftReportHarness(giftRows, mappingRows, sessionType, sessionName) {
-  const reads = { databaseOpen: 0, giftRead: 0, mappingRead: 0 };
+  const reads = { databaseOpen: 0, giftRead: 0, mappingRead: 0, ranges: [] };
   function sheet(rows, type) {
     return {
       getLastRow: () => rows.length,
@@ -180,6 +180,7 @@ function createGiftReportHarness(giftRows, mappingRows, sessionType, sessionName
       getRange: (row, column, rowCount, columnCount) => ({
         getValues: () => {
           reads[type]++;
+          reads.ranges.push({ type, row, column, rowCount, columnCount });
           return rows.slice(row - 1, row - 1 + rowCount).map(values => values.slice(column - 1, column - 1 + columnCount));
         }
       })
@@ -225,6 +226,10 @@ test('Gift_Details report joins TikTok ID to User_Mapping without changing the s
   assert.equal(harness.reads.databaseOpen, 1);
   assert.equal(harness.reads.giftRead, 1);
   assert.equal(harness.reads.mappingRead, 1);
+  assert.deepEqual(harness.reads.ranges, [
+    { type: 'giftRead', row: 1, column: 2, rowCount: gifts.length, columnCount: 10 },
+    { type: 'mappingRead', row: 1, column: 1, rowCount: mappings.length, columnCount: 5 }
+  ]);
 });
 
 test('VJ Gift_Details report only returns own VJ rows and own mapped rows with blank VJ', () => {
@@ -340,6 +345,11 @@ test('both User Mapping views expose Gift_Details report tabs and filtered pages
   assert.ok(frontendSource.includes('function giftReportProfileCell'));
   assert.ok(frontendSource.includes('function giftReportGiftCell'));
   assert.ok(frontendSource.includes('var cachedMappingAvatarUrls'));
+  assert.ok(frontendSource.includes('loadMappingAvatarCache(pageRows)'));
+  assert.ok(frontendSource.includes('loadMappingAvatarCache(giftAvatarRows)'));
+  assert.ok(!frontendSource.includes('loadMappingAvatarCache(cachedUserMapData)'));
+  assert.ok(frontendSource.includes('cachedMappingAvatarLookups[lookupKey]'));
+  assert.ok(frontendSource.includes('pendingMappingAvatarLookups[lookupKey]'));
   assert.ok(backendSource.includes("https://beetgames.com/tiktok-gifts.json"));
   assert.ok(frontendSource.includes('beetgames\\.com\\/images\\/gifts'));
 });

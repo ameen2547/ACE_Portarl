@@ -3590,6 +3590,8 @@ var userMapCurrentPage = { VJ: 1, ADMIN: 1 };
 var userMapCurrentTotal = { VJ: 0, ADMIN: 0 };
 var USER_MAPPING_PAGE_SIZE = 50;
 var cachedMappingAvatarUrls = Object.create(null);
+var cachedMappingAvatarLookups = Object.create(null);
+var pendingMappingAvatarLookups = Object.create(null);
 var giftDetailsReportState = {
   VJ: { page: 1, totalPages: 0, loading: false, requestId: 0, searchTimer: null, loaded: false },
   ADMIN: { page: 1, totalPages: 0, loading: false, requestId: 0, searchTimer: null, loaded: false }
@@ -3941,6 +3943,12 @@ function renderGiftDetailsReport(userType, result) {
       if (idKey) mappingById[idKey] = mapping;
       if (vjKey && !mappingByVj[vjKey]) mappingByVj[vjKey] = mapping;
     });
+    var giftAvatarRows = list.map(function(item) {
+      var mapping = mappingById[giftReportIdentityKey(item.tiktokId)];
+      var vjProfile = mappingByVj[mappingText(item.vj).trim().toLowerCase()];
+      return { tiktokId: item.isMapped ? item.tiktokId : '', vjTikTokId: vjProfile && vjProfile.vjTikTokId };
+    });
+    loadMappingAvatarCache(giftAvatarRows);
     if (!list.length) {
       var emptyRow = document.createElement('tr');
       giftReportCell(emptyRow, 'ไม่พบรายการ Gift_Details ตามตัวกรอง', 'p-4 text-center text-slate-400');
@@ -4050,6 +4058,7 @@ function updateUserMapReport(userType) {
   var pageRows = filtered.slice(pageStart, pageStart + USER_MAPPING_PAGE_SIZE);
   if (isAdmin) renderAdminUserMapTable(pageRows);
   else renderVJUserMapTable(pageRows);
+  loadMappingAvatarCache(pageRows);
   updateUserMapCurrentPagination(userType, filtered.length);
 
   var teams = new Set(filtered.map(function(item) { return mappingText(item.team).trim(); }).filter(Boolean));
@@ -4185,9 +4194,6 @@ function loadUserMappingForVJ() {
     populateGiftTeamFilter('VJ');
     setUserMapQuickRange('VJ', 'all');
     markUserMapReportLoaded('VJ');
-    // Avatar cache is for the current mapping table. Historical cards keep their
-    // lightweight image fallback and should not trigger hundreds of extra RPCs.
-    loadMappingAvatarCache(cachedUserMapData);
     renderUserMapHistory(cachedUserMapHistory, 'vjUserMapHistoryDate', 'vjUserMapHistoryGroups');
     updateUserMapHistoryMoreButton('VJ');
   });
@@ -4281,18 +4287,24 @@ function createMappingLinkCell(item, compact) {
 }
 
 function loadMappingAvatarCache(items) {
+  var viewerName = currentAdminUser || currentSessionVJ;
+  var viewerType = currentAdminUser ? 'ADMIN' : 'VJ';
+  var sessionToken = viewerType === 'ADMIN' ? currentAdminToken : currentSessionToken;
+  if (!viewerName || !sessionToken) return;
   var ids = [];
   var seen = Object.create(null);
   (items || []).forEach(function(item) {
     [item.tiktokId, item.vjTikTokId].forEach(function(value) {
       var id = (value || '').trim();
       var key = id.toLowerCase();
-      if (id && !seen[key]) { seen[key] = true; ids.push(id); }
+      var lookupKey = viewerType + '|' + viewerName.toLowerCase() + '|' + key;
+      if (id && !seen[key] && !cachedMappingAvatarUrls[key] && !cachedMappingAvatarLookups[lookupKey] && !pendingMappingAvatarLookups[lookupKey]) {
+        seen[key] = true;
+        ids.push({ id: id, key: key, lookupKey: lookupKey });
+      }
     });
   });
   if (!ids.length || typeof google === 'undefined' || !google.script || !google.script.run) return;
-  var viewerName = currentAdminUser || currentSessionVJ;
-  var viewerType = currentAdminUser ? 'ADMIN' : 'VJ';
   function applyAvatarResult(avatarMap) {
     if (!avatarMap) return;
     Object.keys(avatarMap).forEach(function(key) {
@@ -4309,13 +4321,20 @@ function loadMappingAvatarCache(items) {
   function loadBatch(offset) {
     if (offset >= ids.length) return;
     var batch = ids.slice(offset, offset + 10);
+    batch.forEach(function(item) { pendingMappingAvatarLookups[item.lookupKey] = true; });
+    var batchIds = batch.map(function(item) { return item.id; });
     google.script.run.withSuccessHandler(function(res) {
+      batch.forEach(function(item) {
+        delete pendingMappingAvatarLookups[item.lookupKey];
+        if (res && res.success) cachedMappingAvatarLookups[item.lookupKey] = true;
+      });
       if (res && res.success) applyAvatarResult(res.avatars || {});
       loadBatch(offset + 10);
     }).withFailureHandler(function(err) {
+      batch.forEach(function(item) { delete pendingMappingAvatarLookups[item.lookupKey]; });
       console.warn('โหลดภาพโปรไฟล์จาก cache ไม่สำเร็จ:', err);
       loadBatch(offset + 10);
-    }).getUserMappingAvatarData(batch, viewerName, viewerType, currentAdminToken || currentSessionToken, clientIpAddress);
+    }).getUserMappingAvatarData(batchIds, viewerName, viewerType, sessionToken, clientIpAddress);
   }
   loadBatch(0);
 }
@@ -4380,7 +4399,6 @@ function loadUserMappingForAdmin() {
     populateGiftTeamFilter('ADMIN');
     setUserMapQuickRange('ADMIN', 'all');
     markUserMapReportLoaded('ADMIN');
-    loadMappingAvatarCache(cachedUserMapData);
     renderUserMapHistory(cachedUserMapHistory, 'admUserMapHistoryDate', 'admUserMapHistoryGroups');
     populateUserMapVJDropdown();
     updateUserMapHistoryMoreButton('ADMIN');
