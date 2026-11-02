@@ -9,10 +9,17 @@ const backendSource = fs.readFileSync(path.join(projectRoot, 'code.gs'), 'utf8')
 const frontendSource = fs.readFileSync(path.join(projectRoot, 'index.html'), 'utf8');
 const TODAY = '2026-10-30';
 
-function makeSheet(rows) {
+function makeSheet(rows, sheetName, rangeSpecs) {
   return {
     getDataRange() {
       return { getValues: () => rows };
+    },
+    getRange(row, column, rowCount, columnCount) {
+      rangeSpecs.push({ sheetName, row, column, rowCount, columnCount });
+      return {
+        getValues: () => rows.slice(row - 1, row - 1 + rowCount)
+          .map(values => values.slice(column - 1, column - 1 + columnCount))
+      };
     },
     getLastRow() {
       return rows.length;
@@ -22,6 +29,7 @@ function makeSheet(rows) {
 
 function createHarness(liveRows, historyRows) {
   const properties = new Map();
+  const rangeSpecs = [];
   let archiveCallCount = 0;
   const context = {
     console,
@@ -45,8 +53,8 @@ function createHarness(liveRows, historyRows) {
   vm.createContext(context);
   vm.runInContext(backendSource, context, { filename: 'code.gs', timeout: 2000 });
 
-  const liveSheet = makeSheet(liveRows);
-  const historySheet = makeSheet(historyRows);
+  const liveSheet = makeSheet(liveRows, 'User_Mapping', rangeSpecs);
+  const historySheet = makeSheet(historyRows, 'User_Mapping_History', rangeSpecs);
   context.requireSession_ = token => ({
     success: true,
     session: token === 'admin-token'
@@ -64,6 +72,7 @@ function createHarness(liveRows, historyRows) {
 
   return {
     context,
+    rangeSpecs,
     get archiveCallCount() { return archiveCallCount; }
   };
 }
@@ -88,6 +97,12 @@ test('VJ response includes only that VJ records in live and history data', () =>
   assert.equal(result.success, true);
   assert.deepEqual(Array.from(result.list, row => row.assignedVJ), ['Kim']);
   assert.deepEqual(Array.from(result.historyList, row => row.assignedVJ), ['Kim']);
+  assert.equal('userAvatar' in result.list[0], false);
+  assert.equal('vjAvatar' in result.list[0], false);
+  assert.deepEqual(harness.rangeSpecs, [
+    { sheetName: 'User_Mapping', row: 1, column: 1, rowCount: live.length, columnCount: 10 },
+    { sheetName: 'User_Mapping_History', row: 1, column: 1, rowCount: history.length, columnCount: 11 }
+  ]);
 });
 
 test('ADMIN response includes all live records and first history page', () => {

@@ -2015,7 +2015,8 @@ function getUserMappingAvatarData(avatarIds, userName, userType, sessionToken, i
     if (!ids.length) return { success: true, avatars: {} };
     var database = getUserMappingDatabase_();
     var mappingSheet = getOrCreateUserMappingSheet_(database);
-    var mappingRows = mappingSheet.getDataRange().getValues();
+    var mappingLastRow = mappingSheet.getLastRow();
+    var mappingRows = mappingLastRow > 0 ? mappingSheet.getRange(1, 1, mappingLastRow, 4).getValues() : [];
     var cleanType = cleanStr_(userType).toUpperCase();
     var cleanUser = cleanStr_(userName).toLowerCase();
     if (cleanType !== 'ADMIN' && cleanType !== 'VJ') return { success: false, message: 'ไม่สามารถตรวจสอบสิทธิ์โหลดภาพได้', avatars: {} };
@@ -2027,7 +2028,8 @@ function getUserMappingAvatarData(avatarIds, userName, userType, sessionToken, i
     }
     var historySheetForAccess = database.getSheetByName(USER_MAPPING_HISTORY_SHEET);
     if (cleanType === 'VJ' && historySheetForAccess) {
-      var historicalRows = historySheetForAccess.getDataRange().getValues();
+      var historyAccessLastRow = historySheetForAccess.getLastRow();
+      var historicalRows = historyAccessLastRow > 0 ? historySheetForAccess.getRange(1, 1, historyAccessLastRow, 5).getValues() : [];
       for (var hr = 1; hr < historicalRows.length; hr++) {
         var historicalId = cleanStr_(historicalRows[hr][1]);
         var historicalVj = cleanStr_(historicalRows[hr][4]).toLowerCase();
@@ -2036,19 +2038,27 @@ function getUserMappingAvatarData(avatarIds, userName, userType, sessionToken, i
     }
     var active = SpreadsheetApp.getActiveSpreadsheet();
     var vjSheet = active.getSheetByName('vj mc all') || active.getSheetByName('VJ MC ALL') || active.getSheetByName('vj_mc_all');
-    if (vjSheet) {
-      var vjValues = vjSheet.getDataRange().getValues();
-      var headers = vjValues[0] || [];
+    if (vjSheet && vjSheet.getLastRow() > 0 && vjSheet.getLastColumn() > 0) {
+      var vjLastRow = vjSheet.getLastRow();
+      var vjLastColumn = vjSheet.getLastColumn();
+      var headers = vjSheet.getRange(1, 1, 1, vjLastColumn).getValues()[0] || [];
       var stageCol = 1, idCol = 7;
       for (var c = 0; c < headers.length; c++) {
         var h = cleanStr_(headers[c]).toUpperCase().replace(/[\s_-]+/g, '');
         if (h === 'STGENAME' || h === 'STAGENAME' || h === 'ชื่อการแสดง') stageCol = c;
         if (h === 'IDTIKTOK' || h === 'TIKTOKID' || h === 'TIKTOK') idCol = c;
       }
-      for (var v = 1; v < vjValues.length; v++) {
-        var stage = cleanStr_(vjValues[v][stageCol]);
-        var vjId = cleanStr_(vjValues[v][idCol]);
-        if (vjId && (cleanType === 'ADMIN' || stage.toLowerCase() === cleanUser)) allowed[vjId.toLowerCase()] = vjId;
+      if (vjLastRow > 1 && vjLastColumn > 0) {
+        var vjFirstColumn = Math.min(stageCol, idCol);
+        var vjColumnCount = Math.min(vjLastColumn - vjFirstColumn, Math.abs(idCol - stageCol) + 1);
+        var vjProfileRows = vjColumnCount > 0
+          ? vjSheet.getRange(2, vjFirstColumn + 1, vjLastRow - 1, vjColumnCount).getValues()
+          : [];
+        for (var v = 0; v < vjProfileRows.length; v++) {
+          var stage = cleanStr_(vjProfileRows[v][stageCol - vjFirstColumn]);
+          var vjId = cleanStr_(vjProfileRows[v][idCol - vjFirstColumn]);
+          if (vjId && (cleanType === 'ADMIN' || stage.toLowerCase() === cleanUser)) allowed[vjId.toLowerCase()] = vjId;
+        }
       }
     }
     var requested = Object.create(null);
@@ -2105,10 +2115,14 @@ function getUserMappingData(userName, userType, sessionToken, ipAddress, history
     userType = auth.session.userType;
     var database = getUserMappingDatabase_();
     var sheet = getOrCreateUserMappingSheet_(database);
-    var data = sheet.getDataRange().getValues();
+    var liveLastRow = sheet.getLastRow();
+    // User_Mapping's existing schema is A:J. Avoid pulling unrelated columns
+    // if the sheet has extra formatting or auxiliary fields to the right.
+    var data = liveLastRow > 0 ? sheet.getRange(1, 1, liveLastRow, 10).getValues() : [];
     if (!data || !data.length) data = [[]];
     var historySheet = getOrCreateUserMappingHistorySheet_(database);
-    var historyData = historySheet.getDataRange().getValues();
+    var historyLastRow = historySheet.getLastRow();
+    var historyData = historyLastRow > 0 ? historySheet.getRange(1, 1, historyLastRow, 11).getValues() : [];
     var todayStr = userMappingSnapshotDate_();
     // The daily archive is maintained by writes and the time trigger. Keep a
     // persistent date marker so readers do not rescan the archive every few hours.
@@ -2123,18 +2137,26 @@ function getUserMappingData(userName, userType, sessionToken, ipAddress, history
     var activeSs = SpreadsheetApp.getActiveSpreadsheet();
     var vjSheet = activeSs.getSheetByName('vj mc all') || activeSs.getSheetByName('VJ MC ALL') || activeSs.getSheetByName('vj_mc_all');
     var vjProfileMap = Object.create(null);
-    if (vjSheet) {
-      var vjValues = vjSheet.getDataRange().getValues();
-      var hRow = vjValues[0] || [];
+    if (vjSheet && vjSheet.getLastRow() > 0 && vjSheet.getLastColumn() > 0) {
+      var vjLastRow = vjSheet.getLastRow();
+      var vjLastColumn = vjSheet.getLastColumn();
+      var hRow = vjSheet.getRange(1, 1, 1, vjLastColumn).getValues()[0] || [];
       var stageIdx = 1, tiktokIdx = 7;
       for (var c = 0; c < hRow.length; c++) {
         var hStr = cleanStr_(hRow[c]).toUpperCase().replace(/[\s_-]+/g, '');
         if (hStr === 'STGENAME' || hStr === 'STAGENAME' || hStr === 'ชื่อการแสดง') stageIdx = c;
         if (hStr === 'IDTIKTOK' || hStr === 'TIKTOKID' || hStr === 'TIKTOK') tiktokIdx = c;
       }
-      for (var v = 1; v < vjValues.length; v++) {
-        var stage = cleanStr_(vjValues[v][stageIdx]);
-        if (stage) vjProfileMap[stage.toLowerCase()] = tiktokIdx >= 0 ? cleanStr_(vjValues[v][tiktokIdx]) : '';
+      if (vjLastRow > 1 && vjLastColumn > 0) {
+        var vjFirstColumn = Math.min(stageIdx, tiktokIdx);
+        var vjColumnCount = Math.min(vjLastColumn - vjFirstColumn, Math.abs(tiktokIdx - stageIdx) + 1);
+        var vjProfileRows = vjColumnCount > 0
+          ? vjSheet.getRange(2, vjFirstColumn + 1, vjLastRow - 1, vjColumnCount).getValues()
+          : [];
+        for (var v = 0; v < vjProfileRows.length; v++) {
+          var stage = cleanStr_(vjProfileRows[v][stageIdx - vjFirstColumn]);
+          if (stage) vjProfileMap[stage.toLowerCase()] = cleanStr_(vjProfileRows[v][tiktokIdx - vjFirstColumn]);
+        }
       }
     }
 
@@ -2168,9 +2190,7 @@ function getUserMappingData(userName, userType, sessionToken, ipAddress, history
         assignedVJ: assignedVJ, team: team,
         coinsToday: parseDiamondVal_(row[offset + 5]), coinsMonth: parseDiamondVal_(row[offset + 6]),
         updatedDate: updatedText, recordedBy: cleanStr_(row[offset + 8]), totalDays: parseDiamondVal_(row[offset + 9]),
-        userAvatar: getProfilePicUrl_(tiktokId, uName || tiktokId),
         vjTikTokId: vjProfileMap[assignedVJ.toLowerCase()] || '',
-        vjAvatar: getProfilePicUrl_(vjProfileMap[assignedVJ.toLowerCase()] || '', assignedVJ),
         isUpdatedToday: (isHistory ? snapshotDate : updatedDateOnly) === todayStr
       };
     }
