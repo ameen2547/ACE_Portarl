@@ -2254,6 +2254,90 @@ function giftDetailsColumn_(headers, aliases, fallbackIndex) {
   return fallbackIndex;
 }
 
+var GIFT_IMAGE_CATALOG_URL = 'https://raw.githubusercontent.com/antiops/tiktok-trending-data/main/live-gift-details.json';
+var GIFT_IMAGE_CACHE_KEY = 'ACE_GIFT_IMAGE_LOOKUP_V1';
+
+function normalizeGiftImageKey_(value) {
+  var text = cleanStr_(value).toLowerCase();
+  try { text = text.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); } catch (e) {}
+  return text.replace(/[^a-z0-9\u0E00-\u0E7F]/g, '');
+}
+
+function safeGiftImageUrl_(value) {
+  var url = cleanStr_(value);
+  return /^https:\/\/([a-z0-9-]+\.)*tiktokcdn(?:-[a-z0-9-]+)?\.com(?:\/[^\s"'<>]*)?$/i.test(url) ? url : '';
+}
+
+// Resolve only the gift names currently used by the report. Cache the small
+// name-to-image map instead of downloading images or storing a full catalog.
+function getGiftImageUrls_(giftNames) {
+  var requested = Object.create(null);
+  (giftNames || []).forEach(function(name) {
+    var key = normalizeGiftImageKey_(name);
+    if (key) requested[key] = true;
+  });
+  var requestedKeys = Object.keys(requested).slice(0, 300);
+  if (!requestedKeys.length) return {};
+
+  var cache = null;
+  var imageMap = Object.create(null);
+  if (typeof CacheService !== 'undefined') {
+    try {
+      cache = CacheService.getScriptCache();
+      var cacheText = cache.get(GIFT_IMAGE_CACHE_KEY);
+      if (cacheText) imageMap = JSON.parse(cacheText) || Object.create(null);
+    } catch (e) { imageMap = Object.create(null); }
+  }
+  var missing = requestedKeys.filter(function(key) { return !Object.prototype.hasOwnProperty.call(imageMap, key); });
+  if (!missing.length) return imageMap;
+
+  try {
+    if (typeof UrlFetchApp !== 'undefined') {
+      var response = UrlFetchApp.fetch(GIFT_IMAGE_CATALOG_URL, { muteHttpExceptions: true, followRedirects: true, headers: { 'User-Agent': 'ACEContentPortal/1.0' } });
+      if (response.getResponseCode() >= 200 && response.getResponseCode() < 300) {
+        var payload = JSON.parse(response.getContentText());
+        var catalog = Array.isArray(payload) ? payload : (payload && payload.data && Array.isArray(payload.data.gifts) ? payload.data.gifts : []);
+        var wanted = Object.create(null);
+        missing.forEach(function(key) { wanted[key] = true; });
+        catalog.forEach(function(gift) {
+          if (!gift) return;
+          var key = normalizeGiftImageKey_(gift.name);
+          if (!wanted[key] || (Object.prototype.hasOwnProperty.call(imageMap, key) && imageMap[key])) return;
+          var image = gift.image || {};
+          var candidates = image.url_list || image.urlList || [];
+          if (!Array.isArray(candidates)) candidates = [];
+          if (gift.icon) candidates.unshift(gift.icon);
+          var safeUrl = '';
+          for (var i = 0; i < candidates.length && !safeUrl; i++) safeUrl = safeGiftImageUrl_(candidates[i]);
+          if (safeUrl || !Object.prototype.hasOwnProperty.call(imageMap, key)) imageMap[key] = safeUrl;
+        });
+      }
+    }
+  } catch (err) {
+    Logger.log('Gift image catalogue lookup failed: ' + err.toString());
+  }
+  // Negative-cache unknown names so a missing gift does not trigger a network
+  // fetch on every page navigation. A later cache refresh can pick up new gifts.
+  missing.forEach(function(key) {
+    if (!Object.prototype.hasOwnProperty.call(imageMap, key)) imageMap[key] = '';
+  });
+  if (cache) {
+    try {
+      var compactMap = Object.create(null);
+      var compactCount = 0;
+      requestedKeys.forEach(function(key) {
+        if (compactCount < 300 && Object.prototype.hasOwnProperty.call(imageMap, key)) { compactMap[key] = imageMap[key]; compactCount++; }
+      });
+      Object.keys(imageMap).forEach(function(key) {
+        if (compactCount >= 300 || Object.prototype.hasOwnProperty.call(compactMap, key)) return;
+        compactMap[key] = imageMap[key]; compactCount++;
+      });
+      cache.put(GIFT_IMAGE_CACHE_KEY, JSON.stringify(compactMap), 21600);
+    } catch (e) { Logger.log('Gift image cache write skipped: ' + e.toString()); }
+  }
+  return imageMap;
+}
+
 /**
  * Paginated Gift_Details report. Admins may see all rows; VJ sessions only see
  * rows assigned to their own Stage Name. TikTok IDs are joined in memory to
@@ -2315,6 +2399,7 @@ function getGiftDetailsData(sessionToken, ipAddress, options) {
     var rows = [];
     var uniqueGifters = Object.create(null);
     var mappingTotals = Object.create(null);
+    var giftNamesSeen = Object.create(null);
     var totalCoins = 0;
     var mappedRecords = 0;
     for (var r = 1; r < giftRows.length; r++) {
@@ -2343,6 +2428,8 @@ function getGiftDetailsData(sessionToken, ipAddress, options) {
       var round = cleanStr_(source[columns.round]);
       var searchText = [tiktokId, gifterName, giftName, vj, round, mapped && mapped.userName, mapped && mapped.assignedVJ, team].join(' ').toLowerCase();
       if (query && searchText.indexOf(query) === -1) continue;
+      var giftImageKey = normalizeGiftImageKey_(giftName);
+      if (giftImageKey) giftNamesSeen[giftName] = true;
       var quantity = parseDiamondVal_(source[columns.quantity]);
       var unitPrice = parseDiamondVal_(source[columns.unitPrice]);
       var coins = parseDiamondVal_(source[columns.totalCoins]);
@@ -2384,6 +2471,8 @@ function getGiftDetailsData(sessionToken, ipAddress, options) {
     if (totalPages && page > totalPages) page = totalPages;
     var start = (page - 1) * pageSize;
     var pageRows = rows.slice(start, start + pageSize);
+    var imageMap = getGiftImageUrls_(Object.keys(giftNamesSeen));
+    pageRows.forEach(function(item) { item.giftImageUrl = imageMap[normalizeGiftImageKey_(item.giftName)] || ''; });
     pageRows.forEach(function(item) { delete item.sourceRow; });
     var topMappings = Object.keys(mappingTotals).map(function(key) { return mappingTotals[key]; });
     topMappings.sort(function(a, b) { return b.totalCoins - a.totalCoins; });

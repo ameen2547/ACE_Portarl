@@ -287,6 +287,44 @@ test('Gift_Details report pages rows and keeps whole-filter totals', () => {
   assert.equal(Object.hasOwn(firstPage.list[0], 'sourceRow'), false);
 });
 
+test('Gift_Details report resolves gift art by name, validates CDN host, and caches the lookup', () => {
+  const gifts = [
+    giftHeader,
+    ['r1', '2026-10-31 10:00:00', 'R1', 'Kim', 'Gifter A', '@giver-a', 'Bound', 'Rose', 1, 1, 1, 'c1', 'uploader'],
+    ['r2', '2026-10-31 11:00:00', 'R1', 'Kim', 'Gifter B', '@giver-b', 'Bound', 'Unsafe Gift', 1, 1, 1, 'c2', 'uploader']
+  ];
+  const harness = createGiftReportHarness(gifts, [liveHeader], 'ADMIN', 'Admin');
+  const cacheValues = new Map();
+  let fetchCount = 0;
+  harness.context.CacheService = {
+    getScriptCache: () => ({
+      get: key => cacheValues.get(key) || null,
+      put: (key, value) => cacheValues.set(key, value)
+    })
+  };
+  harness.context.UrlFetchApp = {
+    fetch: () => {
+      fetchCount++;
+      return {
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify([
+          { name: 'Rose', image: { url_list: ['https://p16-webcast.tiktokcdn.com/img/rose.webp'] } },
+          { name: 'Unsafe Gift', image: { url_list: ['https://images.attacker.example/unsafe.png'] } }
+        ])
+      };
+    }
+  };
+
+  const first = harness.context.getGiftDetailsData('admin-token', '127.0.0.1', {});
+  const second = harness.context.getGiftDetailsData('admin-token', '127.0.0.1', {});
+  const byName = Object.fromEntries(Array.from(first.list, item => [item.giftName, item.giftImageUrl]));
+
+  assert.equal(byName.Rose, 'https://p16-webcast.tiktokcdn.com/img/rose.webp');
+  assert.equal(byName['Unsafe Gift'], '');
+  assert.equal(second.list.find(item => item.giftName === 'Rose').giftImageUrl, byName.Rose);
+  assert.equal(fetchCount, 1);
+});
+
 test('both User Mapping views expose Gift_Details report tabs and filtered pages', () => {
   for (const id of [
     'vjUserMapTabGifts', 'vjUserMapGiftsPanel', 'vjGiftDateFrom', 'vjGiftTeamFilter', 'vjGiftReportTbody',
@@ -296,4 +334,7 @@ test('both User Mapping views expose Gift_Details report tabs and filtered pages
   }
   assert.ok(frontendSource.includes('.getGiftDetailsData(sessionToken, clientIpAddress, options)'));
   assert.ok(frontendSource.includes('function renderGiftDetailsReport'));
+  assert.ok(frontendSource.includes('function giftReportProfileCell'));
+  assert.ok(frontendSource.includes('function giftReportGiftCell'));
+  assert.ok(frontendSource.includes('var cachedMappingAvatarUrls'));
 });

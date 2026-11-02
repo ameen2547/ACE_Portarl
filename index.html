@@ -3589,6 +3589,7 @@ var userMapHistoryPageLoading = false;
 var userMapCurrentPage = { VJ: 1, ADMIN: 1 };
 var userMapCurrentTotal = { VJ: 0, ADMIN: 0 };
 var USER_MAPPING_PAGE_SIZE = 50;
+var cachedMappingAvatarUrls = Object.create(null);
 var giftDetailsReportState = {
   VJ: { page: 1, totalPages: 0, loading: false, requestId: 0, searchTimer: null, loaded: false },
   ADMIN: { page: 1, totalPages: 0, loading: false, requestId: 0, searchTimer: null, loaded: false }
@@ -3827,6 +3828,63 @@ function giftReportCell(row, value, className) {
   return cell;
 }
 
+function giftReportIdentityKey(value) {
+  return mappingText(value).trim().toLowerCase()
+    .replace(/^https?:\/\/(?:www\.)?tiktok\.com\//, '')
+    .replace(/^@/, '').replace(/\/$/, '');
+}
+
+function giftReportProfileCell(row, id, label, fallbackSource) {
+  var cell = document.createElement('td');
+  cell.className = 'p-3';
+  var wrap = document.createElement('div');
+  wrap.className = 'flex min-w-24 items-center gap-2';
+  var imageSource = cachedMappingAvatarSource(id, fallbackSource);
+  wrap.appendChild(createMappingAvatar(id, imageSource, label, 'h-7 w-7 shrink-0 rounded-full border border-slate-200 object-cover'));
+  var name = document.createElement('span');
+  name.className = 'max-w-40 truncate font-medium text-slate-700';
+  name.textContent = mappingText(label) || '-';
+  wrap.appendChild(name);
+  cell.appendChild(wrap);
+  row.appendChild(cell);
+  return cell;
+}
+
+function safeGiftReportImageSource(value) {
+  var source = mappingText(value).trim();
+  return /^https:\/\/([a-z0-9-]+\.)*tiktokcdn(?:-[a-z0-9-]+)?\.com(?:\/[^\s"'<>]*)?$/i.test(source) ? source : '';
+}
+
+function giftReportGiftCell(row, item) {
+  var cell = document.createElement('td');
+  cell.className = 'p-3';
+  var wrap = document.createElement('div');
+  wrap.className = 'flex min-w-28 items-center gap-2';
+  var source = safeGiftReportImageSource(item.giftImageUrl);
+  var placeholder = document.createElement('span');
+  placeholder.className = 'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-lg';
+  placeholder.textContent = '🎁';
+  if (source) {
+    var image = document.createElement('img');
+    image.src = source;
+    image.alt = '';
+    image.loading = 'lazy';
+    image.referrerPolicy = 'no-referrer';
+    image.className = 'h-9 w-9 shrink-0 rounded-lg border border-slate-100 bg-white object-contain p-0.5';
+    image.onerror = function() { if (image.parentNode) image.parentNode.replaceChild(placeholder, image); };
+    wrap.appendChild(image);
+  } else {
+    wrap.appendChild(placeholder);
+  }
+  var name = document.createElement('span');
+  name.className = 'max-w-36 truncate text-slate-700';
+  name.textContent = mappingText(item.giftName) || 'ของขวัญ';
+  wrap.appendChild(name);
+  cell.appendChild(wrap);
+  row.appendChild(cell);
+  return cell;
+}
+
 function renderGiftDetailsReport(userType, result) {
   var prefix = userType === 'ADMIN' ? 'adm' : 'vj';
   var summary = result.summary || {};
@@ -3875,6 +3933,14 @@ function renderGiftDetailsReport(userType, result) {
   if (tbody) {
     tbody.replaceChildren();
     var list = Array.isArray(result.list) ? result.list : [];
+    var mappingById = Object.create(null);
+    var mappingByVj = Object.create(null);
+    (cachedUserMapData || []).forEach(function(mapping) {
+      var idKey = giftReportIdentityKey(mapping.tiktokId);
+      var vjKey = mappingText(mapping.assignedVJ).trim().toLowerCase();
+      if (idKey) mappingById[idKey] = mapping;
+      if (vjKey && !mappingByVj[vjKey]) mappingByVj[vjKey] = mapping;
+    });
     if (!list.length) {
       var emptyRow = document.createElement('tr');
       giftReportCell(emptyRow, 'ไม่พบรายการ Gift_Details ตามตัวกรอง', 'p-4 text-center text-slate-400');
@@ -3885,13 +3951,16 @@ function renderGiftDetailsReport(userType, result) {
         var row = document.createElement('tr');
         row.className = 'hover:bg-amber-50/50';
         giftReportCell(row, item.eventTime, 'whitespace-nowrap p-3 text-slate-600');
-        giftReportCell(row, item.vj, 'p-3 font-semibold text-purple-700');
-        giftReportCell(row, item.gifterName, 'p-3 font-medium text-slate-700');
+        var mappedProfile = mappingById[giftReportIdentityKey(item.tiktokId)];
+        var vjProfile = mappingByVj[mappingText(item.vj).trim().toLowerCase()];
+        giftReportProfileCell(row, vjProfile && vjProfile.vjTikTokId, item.vj || (vjProfile && vjProfile.assignedVJ), vjProfile && vjProfile.vjAvatar);
+        giftReportProfileCell(row, item.tiktokId, item.gifterName, mappedProfile && mappedProfile.userAvatar);
         giftReportCell(row, item.tiktokId, 'p-3 font-mono text-[11px] text-slate-600');
-        giftReportCell(row, item.giftName, 'p-3 text-slate-700');
+        giftReportGiftCell(row, item);
         giftReportCell(row, (Number(item.quantity) || 0).toLocaleString(), 'p-3 text-right text-slate-600');
         giftReportCell(row, (Number(item.totalCoins) || 0).toLocaleString(), 'p-3 text-right font-bold text-indigo-700');
-        giftReportCell(row, item.mappedUserName || (item.isMapped ? item.tiktokId : 'ไม่พบใน User Mapping'), 'p-3 text-slate-700');
+        if (item.isMapped) giftReportProfileCell(row, item.tiktokId, item.mappedUserName || item.tiktokId, mappedProfile && mappedProfile.userAvatar);
+        else giftReportCell(row, 'ไม่พบใน User Mapping', 'p-3 text-slate-400');
         giftReportCell(row, item.team || 'ไม่ระบุทีม', 'p-3 text-slate-500');
         if (!item.isMapped) row.classList.add('bg-slate-50/70');
         tbody.appendChild(row);
@@ -4226,6 +4295,10 @@ function loadMappingAvatarCache(items) {
   var viewerType = currentAdminUser ? 'ADMIN' : 'VJ';
   function applyAvatarResult(avatarMap) {
     if (!avatarMap) return;
+    Object.keys(avatarMap).forEach(function(key) {
+      var safeSource = mappingImageSource(avatarMap[key]);
+      if (safeSource) cachedMappingAvatarUrls[key.toLowerCase()] = safeSource;
+    });
     document.querySelectorAll('img[data-tiktok-avatar]').forEach(function(img) {
       var key = '';
       try { key = decodeURIComponent(img.getAttribute('data-tiktok-avatar') || '').toLowerCase(); } catch (e) { return; }
@@ -4245,6 +4318,11 @@ function loadMappingAvatarCache(items) {
     }).getUserMappingAvatarData(batch, viewerName, viewerType, currentAdminToken || currentSessionToken, clientIpAddress);
   }
   loadBatch(0);
+}
+
+function cachedMappingAvatarSource(id, fallback) {
+  var key = mappingText(id).trim().toLowerCase();
+  return mappingImageSource(cachedMappingAvatarUrls[key]) || mappingImageSource(fallback);
 }
 
 // ------------------------------------------
