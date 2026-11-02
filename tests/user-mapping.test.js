@@ -165,6 +165,10 @@ test('both User Mapping views provide report filters, summary cards, and history
   assert.ok(frontendSource.includes("setUserMapQuickRange('VJ','week')"));
   assert.ok(frontendSource.includes("setUserMapQuickRange('ADMIN','month')"));
   assert.ok(frontendSource.includes('function renderUserMapTeamSummary'));
+  assert.ok(frontendSource.includes('var USER_MAPPING_PAGE_SIZE = 50;'));
+  assert.ok(frontendSource.includes('id="vjUserMapPageText"'));
+  assert.ok(frontendSource.includes('id="admUserMapPageText"'));
+  assert.ok(frontendSource.includes('function changeUserMapCurrentPage'));
 });
 
 function createGiftReportHarness(giftRows, mappingRows, sessionType, sessionName) {
