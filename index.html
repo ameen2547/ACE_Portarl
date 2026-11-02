@@ -652,11 +652,35 @@
         <div class="ace-um-tabs" role="tablist" aria-label="รายงาน User Mapping">
           <button id="vjUserMapTabCurrent" class="ace-um-tab active" role="tab" aria-selected="true" onclick="switchUserMapPanel('VJ','current')">รายการปัจจุบัน</button>
           <button id="vjUserMapTabHistory" class="ace-um-tab" role="tab" aria-selected="false" onclick="switchUserMapPanel('VJ','history')">ประวัติรายวัน</button>
+          <button id="vjUserMapTabGifts" class="ace-um-tab" role="tab" aria-selected="false" onclick="switchUserMapPanel('VJ','gifts')">🎁 รายงานของขวัญ</button>
         </div>
 
         <div id="vjUserMapHistoryPanel" class="ace-um-panel hidden rounded-2xl border border-indigo-100 bg-indigo-50/40 p-4 space-y-3">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2"><div><h4 class="font-bold text-slate-800 text-sm">ประวัติ User Mapping รายวัน</h4><p class="text-[11px] text-slate-500">จัดกลุ่มตามวันที่ → ทีม → VJ → บุคคล</p></div><div class="flex flex-wrap items-center gap-2"><select id="vjUserMapHistoryDate" onchange="renderUserMapHistory(cachedUserMapHistory,'vjUserMapHistoryDate','vjUserMapHistoryGroups')" class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"><option value="all">ทุกวันที่มีประวัติ</option></select><button id="vjUserMapHistoryMore" type="button" onclick="loadOlderUserMapHistory('VJ')" class="hidden rounded-xl border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50">โหลดประวัติเก่ากว่า</button></div></div>
           <div id="vjUserMapHistoryGroups" class="space-y-3"></div>
+        </div>
+        <div id="vjUserMapGiftsPanel" class="ace-um-panel hidden rounded-2xl border border-amber-100 bg-amber-50/30 p-4 space-y-4">
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div><h4 class="font-bold text-slate-800 text-sm">🎁 Gift_Details ที่จับคู่กับ User Mapping</h4><p class="mt-1 text-[11px] text-slate-500">เชื่อมด้วย TikTok ID และแสดงทีม/VJ ที่รับผิดชอบ · ข้อมูลต้นทางเป็นแบบอ่านอย่างเดียว</p></div>
+            <div class="grid grid-cols-2 sm:flex gap-2">
+              <input id="vjGiftDateFrom" type="date" onchange="loadGiftDetailsReport('VJ',1)" aria-label="วันที่เริ่มต้น Gift" class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
+              <input id="vjGiftDateTo" type="date" onchange="loadGiftDetailsReport('VJ',1)" aria-label="วันที่สิ้นสุด Gift" class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
+              <select id="vjGiftTeamFilter" onchange="loadGiftDetailsReport('VJ',1)" aria-label="กรองรายงาน Gift ตามทีม" class="col-span-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"><option value="">ทุกทีม</option></select>
+              <input id="vjGiftSearch" type="search" oninput="scheduleGiftDetailsSearch('VJ')" placeholder="ค้นหาชื่อ / TikTok ID / ของขวัญ..." aria-label="ค้นหา Gift_Details" class="col-span-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs sm:min-w-64">
+            </div>
+          </div>
+          <div class="grid grid-cols-2 xl:grid-cols-4 gap-2">
+            <article class="rounded-xl border border-slate-100 bg-white p-3"><p class="text-[10px] text-slate-500">💎 เหรียญรวม</p><p id="vjGiftMetricCoins" class="mt-1 font-extrabold text-indigo-700">0</p></article>
+            <article class="rounded-xl border border-slate-100 bg-white p-3"><p class="text-[10px] text-slate-500">🎁 รายการของขวัญ</p><p id="vjGiftMetricEvents" class="mt-1 font-extrabold text-slate-800">0</p></article>
+            <article class="rounded-xl border border-slate-100 bg-white p-3"><p class="text-[10px] text-slate-500">👤 ผู้ส่งไม่ซ้ำ</p><p id="vjGiftMetricPeople" class="mt-1 font-extrabold text-slate-800">0</p></article>
+            <article class="rounded-xl border border-slate-100 bg-white p-3"><p class="text-[10px] text-slate-500">🔗 รายการที่จับคู่ User Mapping</p><p id="vjGiftMetricMapped" class="mt-1 font-extrabold text-emerald-700">0</p></article>
+          </div>
+          <div><div class="mb-2 flex items-center justify-between"><h5 class="text-xs font-bold text-slate-700">ยอดของขวัญรวมตามบุคคลใน User Mapping</h5><span class="text-[10px] text-slate-400">เรียงตามยอดเหรียญ</span></div><div id="vjGiftMappingSummary" class="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3"></div></div>
+          <p id="vjGiftReportStatus" class="text-[11px] text-slate-500" aria-live="polite">เลือกแท็บนี้เพื่อโหลดรายงาน</p>
+          <div class="overflow-x-auto rounded-xl border border-slate-100 bg-white custom-scrollbar">
+            <table class="w-full min-w-[950px] text-left text-xs border-collapse"><thead><tr class="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200"><th class="p-3">วัน / เวลา</th><th class="p-3">VJ</th><th class="p-3">ผู้ส่ง</th><th class="p-3">TikTok ID</th><th class="p-3">ของขวัญ</th><th class="p-3 text-right">จำนวน</th><th class="p-3 text-right">เหรียญ</th><th class="p-3">ผู้ใช้ที่จับคู่</th><th class="p-3">ทีม</th></tr></thead><tbody id="vjGiftReportTbody" class="divide-y divide-slate-100"></tbody></table>
+          </div>
+          <div class="flex items-center justify-between gap-2"><span id="vjGiftPaginationText" class="text-[11px] text-slate-500">—</span><div class="flex gap-2"><button id="vjGiftPrevPage" type="button" onclick="changeGiftDetailsPage('VJ',-1)" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold disabled:opacity-40">ก่อนหน้า</button><button id="vjGiftNextPage" type="button" onclick="changeGiftDetailsPage('VJ',1)" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold disabled:opacity-40">ถัดไป</button></div></div>
         </div>
         <div id="vjUserMapCurrentPanel" class="ace-um-panel overflow-x-auto custom-scrollbar">
           <table class="ace-um-report-table w-full text-left text-xs border-collapse">
@@ -1337,6 +1361,7 @@
       <div class="ace-um-tabs" role="tablist" aria-label="รายงาน User Mapping">
         <button id="admUserMapTabCurrent" class="ace-um-tab active" role="tab" aria-selected="true" onclick="switchUserMapPanel('ADMIN','current')">รายการปัจจุบัน</button>
         <button id="admUserMapTabHistory" class="ace-um-tab" role="tab" aria-selected="false" onclick="switchUserMapPanel('ADMIN','history')">ประวัติรายวัน</button>
+        <button id="admUserMapTabGifts" class="ace-um-tab" role="tab" aria-selected="false" onclick="switchUserMapPanel('ADMIN','gifts')">🎁 รายงานของขวัญ</button>
       </div>
 
       <div id="admUserMapCurrentPanel" class="ace-um-panel overflow-x-auto custom-scrollbar">
@@ -1360,6 +1385,29 @@
       <div id="admUserMapHistoryPanel" class="ace-um-panel hidden rounded-2xl border border-indigo-100 bg-indigo-50/40 p-4 space-y-3">
         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2"><div><h4 class="font-bold text-slate-800 text-sm">ประวัติ User Mapping รายวัน</h4><p class="text-[11px] text-slate-500">Snapshot แยกตามวันที่ → ทีม → VJ → บุคคล (ข้อมูลปัจจุบันใน A–J ไม่ถูกเปลี่ยน)</p></div><div class="flex flex-wrap items-center gap-2"><select id="admUserMapHistoryDate" onchange="renderUserMapHistory(cachedUserMapHistory,'admUserMapHistoryDate','admUserMapHistoryGroups')" class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"><option value="all">ทุกวันที่มีประวัติ</option></select><button id="admUserMapHistoryMore" type="button" onclick="loadOlderUserMapHistory('ADMIN')" class="hidden rounded-xl border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50">โหลดประวัติเก่ากว่า</button></div></div>
         <div id="admUserMapHistoryGroups" class="space-y-3"></div>
+      </div>
+      <div id="admUserMapGiftsPanel" class="ace-um-panel hidden rounded-2xl border border-amber-100 bg-amber-50/30 p-4 space-y-4">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div><h4 class="font-bold text-slate-800 text-sm">🎁 Gift_Details ที่จับคู่กับ User Mapping</h4><p class="mt-1 text-[11px] text-slate-500">เชื่อมด้วย TikTok ID พร้อมข้อมูล VJ/ทีม · ข้อมูลต้นทางเป็นแบบอ่านอย่างเดียว</p></div>
+          <div class="grid grid-cols-2 sm:flex gap-2">
+            <input id="admGiftDateFrom" type="date" onchange="loadGiftDetailsReport('ADMIN',1)" aria-label="วันที่เริ่มต้น Gift" class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
+            <input id="admGiftDateTo" type="date" onchange="loadGiftDetailsReport('ADMIN',1)" aria-label="วันที่สิ้นสุด Gift" class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
+            <select id="admGiftTeamFilter" onchange="loadGiftDetailsReport('ADMIN',1)" aria-label="กรองรายงาน Gift ตามทีม" class="col-span-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"><option value="">ทุกทีม</option></select>
+            <input id="admGiftSearch" type="search" oninput="scheduleGiftDetailsSearch('ADMIN')" placeholder="ค้นหาชื่อ / TikTok ID / VJ / ของขวัญ..." aria-label="ค้นหา Gift_Details" class="col-span-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs sm:min-w-64">
+          </div>
+        </div>
+        <div class="grid grid-cols-2 xl:grid-cols-4 gap-2">
+          <article class="rounded-xl border border-slate-100 bg-white p-3"><p class="text-[10px] text-slate-500">💎 เหรียญรวม</p><p id="admGiftMetricCoins" class="mt-1 font-extrabold text-indigo-700">0</p></article>
+          <article class="rounded-xl border border-slate-100 bg-white p-3"><p class="text-[10px] text-slate-500">🎁 รายการของขวัญ</p><p id="admGiftMetricEvents" class="mt-1 font-extrabold text-slate-800">0</p></article>
+          <article class="rounded-xl border border-slate-100 bg-white p-3"><p class="text-[10px] text-slate-500">👤 ผู้ส่งไม่ซ้ำ</p><p id="admGiftMetricPeople" class="mt-1 font-extrabold text-slate-800">0</p></article>
+          <article class="rounded-xl border border-slate-100 bg-white p-3"><p class="text-[10px] text-slate-500">🔗 รายการที่จับคู่ User Mapping</p><p id="admGiftMetricMapped" class="mt-1 font-extrabold text-emerald-700">0</p></article>
+        </div>
+        <div><div class="mb-2 flex items-center justify-between"><h5 class="text-xs font-bold text-slate-700">ยอดของขวัญรวมตามบุคคลใน User Mapping</h5><span class="text-[10px] text-slate-400">เรียงตามยอดเหรียญ</span></div><div id="admGiftMappingSummary" class="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3"></div></div>
+        <p id="admGiftReportStatus" class="text-[11px] text-slate-500" aria-live="polite">เลือกแท็บนี้เพื่อโหลดรายงาน</p>
+        <div class="overflow-x-auto rounded-xl border border-slate-100 bg-white custom-scrollbar">
+          <table class="w-full min-w-[950px] text-left text-xs border-collapse"><thead><tr class="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200"><th class="p-3">วัน / เวลา</th><th class="p-3">VJ</th><th class="p-3">ผู้ส่ง</th><th class="p-3">TikTok ID</th><th class="p-3">ของขวัญ</th><th class="p-3 text-right">จำนวน</th><th class="p-3 text-right">เหรียญ</th><th class="p-3">ผู้ใช้ที่จับคู่</th><th class="p-3">ทีม</th></tr></thead><tbody id="admGiftReportTbody" class="divide-y divide-slate-100"></tbody></table>
+        </div>
+        <div class="flex items-center justify-between gap-2"><span id="admGiftPaginationText" class="text-[11px] text-slate-500">—</span><div class="flex gap-2"><button id="admGiftPrevPage" type="button" onclick="changeGiftDetailsPage('ADMIN',-1)" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold disabled:opacity-40">ก่อนหน้า</button><button id="admGiftNextPage" type="button" onclick="changeGiftDetailsPage('ADMIN',1)" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold disabled:opacity-40">ถัดไป</button></div></div>
       </div>
     </section>
 
@@ -3532,6 +3580,10 @@ var cachedUserMapHistory = [];
 var cachedUserMapHistoryOffset = 0;
 var cachedUserMapHistoryHasMore = false;
 var userMapHistoryPageLoading = false;
+var giftDetailsReportState = {
+  VJ: { page: 1, totalPages: 0, loading: false, requestId: 0, searchTimer: null, loaded: false },
+  ADMIN: { page: 1, totalPages: 0, loading: false, requestId: 0, searchTimer: null, loaded: false }
+};
 
 function requestUserMappingData(userName, userType, sessionToken, onSuccess, historyOffset, onFailure) {
   var attempt = 0;
@@ -3645,14 +3697,207 @@ function userMapLocalDate(value) {
 function switchUserMapPanel(userType, panel) {
   var prefix = userType === 'ADMIN' ? 'adm' : 'vj';
   var current = panel === 'current';
+  var history = panel === 'history';
+  var gifts = panel === 'gifts';
   var currentPanel = document.getElementById(prefix + 'UserMapCurrentPanel');
   var historyPanel = document.getElementById(prefix + 'UserMapHistoryPanel');
+  var giftsPanel = document.getElementById(prefix + 'UserMapGiftsPanel');
   var currentTab = document.getElementById(prefix + 'UserMapTabCurrent');
   var historyTab = document.getElementById(prefix + 'UserMapTabHistory');
+  var giftsTab = document.getElementById(prefix + 'UserMapTabGifts');
   if (currentPanel) currentPanel.classList.toggle('hidden', !current);
-  if (historyPanel) historyPanel.classList.toggle('hidden', current);
+  if (historyPanel) historyPanel.classList.toggle('hidden', !history);
+  if (giftsPanel) giftsPanel.classList.toggle('hidden', !gifts);
   if (currentTab) { currentTab.classList.toggle('active', current); currentTab.setAttribute('aria-selected', String(current)); }
-  if (historyTab) { historyTab.classList.toggle('active', !current); historyTab.setAttribute('aria-selected', String(!current)); }
+  if (historyTab) { historyTab.classList.toggle('active', history); historyTab.setAttribute('aria-selected', String(history)); }
+  if (giftsTab) { giftsTab.classList.toggle('active', gifts); giftsTab.setAttribute('aria-selected', String(gifts)); }
+  if (gifts && !giftDetailsReportState[userType].loaded) loadGiftDetailsReport(userType, 1);
+}
+
+function populateGiftTeamFilter(userType) {
+  var prefix = userType === 'ADMIN' ? 'adm' : 'vj';
+  var select = document.getElementById(prefix + 'GiftTeamFilter');
+  if (!select) return;
+  var selected = select.value;
+  var teams = Array.from(new Set((cachedUserMapData || []).map(function(item) { return mappingText(item.team).trim(); }).filter(Boolean))).sort(function(a, b) { return a.localeCompare(b); });
+  select.innerHTML = '<option value="">ทุกทีม</option>';
+  teams.forEach(function(team) {
+    var option = document.createElement('option');
+    option.value = team;
+    option.textContent = team;
+    select.appendChild(option);
+  });
+  if (teams.indexOf(selected) !== -1) select.value = selected;
+}
+
+function scheduleGiftDetailsSearch(userType) {
+  var state = giftDetailsReportState[userType];
+  if (!state) return;
+  if (state.searchTimer) window.clearTimeout(state.searchTimer);
+  state.searchTimer = window.setTimeout(function() { loadGiftDetailsReport(userType, 1); }, 300);
+}
+
+function changeGiftDetailsPage(userType, delta) {
+  var state = giftDetailsReportState[userType];
+  if (!state || state.loading) return;
+  var nextPage = state.page + Number(delta || 0);
+  if (nextPage < 1 || nextPage > state.totalPages) return;
+  loadGiftDetailsReport(userType, nextPage);
+}
+
+function loadGiftDetailsReport(userType, page) {
+  var state = giftDetailsReportState[userType];
+  var prefix = userType === 'ADMIN' ? 'adm' : 'vj';
+  if (!state) return;
+  var status = document.getElementById(prefix + 'GiftReportStatus');
+  if (!hasAppsScriptBridge()) {
+    if (status) status.textContent = 'ไม่พบการเชื่อมต่อ Apps Script กรุณาเปิดระบบผ่านลิงก์ Web App';
+    return;
+  }
+  var sessionToken = userType === 'ADMIN' ? currentAdminToken : currentSessionToken;
+  if (!sessionToken) {
+    if (status) status.textContent = 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่';
+    return;
+  }
+  var requestId = ++state.requestId;
+  state.page = Math.max(1, Number(page) || 1);
+  state.loading = true;
+  if (status) status.textContent = 'กำลังโหลดข้อมูล Gift_Details...';
+  var previousButton = document.getElementById(prefix + 'GiftPrevPage');
+  var nextButton = document.getElementById(prefix + 'GiftNextPage');
+  if (previousButton) previousButton.disabled = true;
+  if (nextButton) nextButton.disabled = true;
+  var valueOf = function(id) { var el = document.getElementById(id); return el ? el.value : ''; };
+  var options = {
+    page: state.page,
+    dateFrom: valueOf(prefix + 'GiftDateFrom'),
+    dateTo: valueOf(prefix + 'GiftDateTo'),
+    team: valueOf(prefix + 'GiftTeamFilter'),
+    query: valueOf(prefix + 'GiftSearch')
+  };
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (requestId !== state.requestId) return;
+      state.loading = false;
+      if (!res || !res.success) {
+        state.loaded = false;
+        if (status) status.textContent = (res && res.message) || 'โหลดรายงาน Gift_Details ไม่สำเร็จ';
+        var tbody = document.getElementById(prefix + 'GiftReportTbody');
+        if (tbody) tbody.innerHTML = '<tr><td colspan="9" class="p-4 text-center text-rose-600">ไม่สามารถโหลดข้อมูลได้</td></tr>';
+        var previous = document.getElementById(prefix + 'GiftPrevPage');
+        var next = document.getElementById(prefix + 'GiftNextPage');
+        if (previous) previous.disabled = state.page <= 1;
+        if (next) next.disabled = !state.totalPages || state.page >= state.totalPages;
+        return;
+      }
+      state.loaded = true;
+      state.page = Number(res.page) || 1;
+      state.totalPages = Number(res.totalPages) || 0;
+      renderGiftDetailsReport(userType, res);
+    })
+    .withFailureHandler(function(err) {
+      if (requestId !== state.requestId) return;
+      state.loading = false;
+      state.loaded = false;
+      var message = err && err.message ? err.message : String(err || 'ไม่ทราบสาเหตุ');
+      if (status) status.textContent = 'โหลดรายงาน Gift_Details ไม่สำเร็จ: ' + message;
+      var previous = document.getElementById(prefix + 'GiftPrevPage');
+      var next = document.getElementById(prefix + 'GiftNextPage');
+      if (previous) previous.disabled = state.page <= 1;
+      if (next) next.disabled = !state.totalPages || state.page >= state.totalPages;
+      console.error('โหลด Gift_Details ไม่สำเร็จ:', err);
+    })
+    .getGiftDetailsData(sessionToken, clientIpAddress, options);
+}
+
+function giftReportCell(row, value, className) {
+  var cell = document.createElement('td');
+  cell.className = className || 'p-3 text-slate-700';
+  cell.textContent = value === null || value === undefined || value === '' ? '-' : String(value);
+  row.appendChild(cell);
+  return cell;
+}
+
+function renderGiftDetailsReport(userType, result) {
+  var prefix = userType === 'ADMIN' ? 'adm' : 'vj';
+  var summary = result.summary || {};
+  var setMetric = function(name, value) {
+    var el = document.getElementById(prefix + 'GiftMetric' + name);
+    if (el) el.textContent = (Number(value) || 0).toLocaleString();
+  };
+  setMetric('Coins', summary.totalCoins);
+  setMetric('Events', summary.eventCount);
+  setMetric('People', summary.uniqueGifters);
+  setMetric('Mapped', summary.mappedRecords);
+
+  var mappingSummary = document.getElementById(prefix + 'GiftMappingSummary');
+  if (mappingSummary) {
+    mappingSummary.replaceChildren();
+    var groups = Array.isArray(result.summaryByMapping) ? result.summaryByMapping : [];
+    if (!groups.length) {
+      var emptySummary = document.createElement('p');
+      emptySummary.className = 'col-span-full rounded-xl border border-dashed border-slate-200 bg-white p-3 text-center text-[11px] text-slate-400';
+      emptySummary.textContent = 'ยังไม่มีรายการที่จับคู่กับ User Mapping ในช่วงที่เลือก';
+      mappingSummary.appendChild(emptySummary);
+    } else {
+      groups.forEach(function(item) {
+        var card = document.createElement('article');
+        card.className = 'rounded-xl border border-slate-100 bg-white p-3';
+        var title = document.createElement('p');
+        title.className = 'truncate text-xs font-bold text-slate-800';
+        title.textContent = item.userName || item.tiktokId || 'ไม่ระบุชื่อ';
+        var meta = document.createElement('p');
+        meta.className = 'mt-1 truncate text-[10px] text-slate-500';
+        meta.textContent = [item.tiktokId, item.assignedVJ, item.team].filter(Boolean).join(' · ') || 'ไม่ระบุข้อมูลทีม/VJ';
+        var total = document.createElement('p');
+        total.className = 'mt-2 text-sm font-extrabold text-indigo-700';
+        total.textContent = (Number(item.totalCoins) || 0).toLocaleString() + ' เหรียญ';
+        var events = document.createElement('span');
+        events.className = 'ml-2 text-[10px] font-medium text-slate-400';
+        events.textContent = (Number(item.eventCount) || 0).toLocaleString() + ' รายการ';
+        total.appendChild(events);
+        card.appendChild(title); card.appendChild(meta); card.appendChild(total);
+        mappingSummary.appendChild(card);
+      });
+    }
+  }
+
+  var tbody = document.getElementById(prefix + 'GiftReportTbody');
+  if (tbody) {
+    tbody.replaceChildren();
+    var list = Array.isArray(result.list) ? result.list : [];
+    if (!list.length) {
+      var emptyRow = document.createElement('tr');
+      giftReportCell(emptyRow, 'ไม่พบรายการ Gift_Details ตามตัวกรอง', 'p-4 text-center text-slate-400');
+      emptyRow.firstChild.colSpan = 9;
+      tbody.appendChild(emptyRow);
+    } else {
+      list.forEach(function(item) {
+        var row = document.createElement('tr');
+        row.className = 'hover:bg-amber-50/50';
+        giftReportCell(row, item.eventTime, 'whitespace-nowrap p-3 text-slate-600');
+        giftReportCell(row, item.vj, 'p-3 font-semibold text-purple-700');
+        giftReportCell(row, item.gifterName, 'p-3 font-medium text-slate-700');
+        giftReportCell(row, item.tiktokId, 'p-3 font-mono text-[11px] text-slate-600');
+        giftReportCell(row, item.giftName, 'p-3 text-slate-700');
+        giftReportCell(row, (Number(item.quantity) || 0).toLocaleString(), 'p-3 text-right text-slate-600');
+        giftReportCell(row, (Number(item.totalCoins) || 0).toLocaleString(), 'p-3 text-right font-bold text-indigo-700');
+        giftReportCell(row, item.mappedUserName || (item.isMapped ? item.tiktokId : 'ไม่พบใน User Mapping'), 'p-3 text-slate-700');
+        giftReportCell(row, item.team || 'ไม่ระบุทีม', 'p-3 text-slate-500');
+        if (!item.isMapped) row.classList.add('bg-slate-50/70');
+        tbody.appendChild(row);
+      });
+    }
+  }
+  var status = document.getElementById(prefix + 'GiftReportStatus');
+  if (status) status.textContent = 'ข้อมูลจาก Gift_Details · แสดง ' + (result.list || []).length + ' จาก ' + (Number(result.totalRecords) || 0).toLocaleString() + ' รายการ';
+  var pageCount = Number(result.totalPages) || 0;
+  var pageText = document.getElementById(prefix + 'GiftPaginationText');
+  if (pageText) pageText.textContent = pageCount ? 'หน้า ' + result.page + ' / ' + pageCount + ' · รวม ' + Number(result.totalRecords || 0).toLocaleString() + ' รายการ' : 'ไม่มีรายการ';
+  var previousButton = document.getElementById(prefix + 'GiftPrevPage');
+  var nextButton = document.getElementById(prefix + 'GiftNextPage');
+  if (previousButton) previousButton.disabled = result.page <= 1;
+  if (nextButton) nextButton.disabled = result.page >= pageCount;
 }
 
 function populateUserMapTeamFilter(userType) {
@@ -3827,6 +4072,7 @@ function loadUserMappingForVJ() {
     cachedUserMapHistoryOffset = Number(res.historyNextOffset) || cachedUserMapHistory.length;
     cachedUserMapHistoryHasMore = !!res.historyHasMore;
     populateUserMapTeamFilter('VJ');
+    populateGiftTeamFilter('VJ');
     setUserMapQuickRange('VJ', 'all');
     markUserMapReportLoaded('VJ');
     // Avatar cache is for the current mapping table. Historical cards keep their
@@ -4011,6 +4257,7 @@ function loadUserMappingForAdmin() {
     cachedUserMapHistoryOffset = Number(res.historyNextOffset) || cachedUserMapHistory.length;
     cachedUserMapHistoryHasMore = !!res.historyHasMore;
     populateUserMapTeamFilter('ADMIN');
+    populateGiftTeamFilter('ADMIN');
     setUserMapQuickRange('ADMIN', 'all');
     markUserMapReportLoaded('ADMIN');
     loadMappingAvatarCache(cachedUserMapData);

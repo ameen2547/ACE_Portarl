@@ -2221,6 +2221,188 @@ function getUserMappingData(userName, userType, sessionToken, ipAddress, history
   }
 }
 
+// Read-only Gift_Details report joined to User_Mapping by TikTok ID.
+// The User_Mapping A:J schema is intentionally not modified by this report.
+function normalizeGiftMappingKey_(value) {
+  var key = cleanStr_(value).toLowerCase();
+  key = key.replace(/^https?:\/\/(?:www\.)?tiktok\.com\//, '').replace(/^@/, '').replace(/\/$/, '');
+  return key;
+}
+
+function giftDetailsEventTime_(value) {
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
+  }
+  if (typeof value === 'number' && isFinite(value)) {
+    var serialDate = new Date(Math.round((value - 25569) * 86400000));
+    return isNaN(serialDate.getTime()) ? '' : Utilities.formatDate(serialDate, 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
+  }
+  var text = cleanStr_(value);
+  if (!text) return '';
+  var iso = text.match(/^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}(?::\d{2})?))?/);
+  if (iso) return iso[1] + (iso[2] ? ' ' + (iso[2].length === 5 ? iso[2] + ':00' : iso[2]) : '');
+  var parsed = new Date(text);
+  return isNaN(parsed.getTime()) ? text : Utilities.formatDate(parsed, 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
+}
+
+function giftDetailsColumn_(headers, aliases, fallbackIndex) {
+  var normalizedAliases = aliases.map(function(alias) { return cleanStr_(alias).toLowerCase().replace(/[^a-z0-9]/g, ''); });
+  for (var i = 0; i < headers.length; i++) {
+    var normalizedHeader = cleanStr_(headers[i]).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (normalizedAliases.indexOf(normalizedHeader) !== -1) return i;
+  }
+  return fallbackIndex;
+}
+
+/**
+ * Paginated Gift_Details report. Admins may see all rows; VJ sessions only see
+ * rows assigned to their own Stage Name. TikTok IDs are joined in memory to
+ * User_Mapping (A:J remains unchanged).
+ */
+function getGiftDetailsData(sessionToken, ipAddress, options) {
+  try {
+    var auth = requireSession_(sessionToken, null, ipAddress);
+    if (!auth.success) return { success: false, message: auth.message, list: [], summaryByMapping: [] };
+    var userType = cleanStr_(auth.session.userType).toUpperCase();
+    var userName = cleanStr_(auth.session.userName);
+    if (userType !== 'ADMIN' && userType !== 'VJ') return { success: false, message: 'ไม่มีสิทธิ์เข้าถึงรายงาน Gift_Details', list: [], summaryByMapping: [] };
+
+    options = options && typeof options === 'object' ? options : {};
+    var page = Math.max(1, Math.floor(Number(options.page) || 1));
+    var pageSize = 50;
+    var dateFrom = /^\d{4}-\d{2}-\d{2}$/.test(cleanStr_(options.dateFrom)) ? cleanStr_(options.dateFrom) : '';
+    var dateTo = /^\d{4}-\d{2}-\d{2}$/.test(cleanStr_(options.dateTo)) ? cleanStr_(options.dateTo) : '';
+    var teamFilter = cleanStr_(options.team).toLowerCase();
+    var query = cleanStr_(options.query).toLowerCase().slice(0, 80);
+
+    // Open the external spreadsheet once per request and read each tab in one batch.
+    var database = getUserMappingDatabase_();
+    var giftSheet = database.getSheetByName('Gift_Details');
+    if (!giftSheet) return { success: false, message: 'ไม่พบชีต Gift_Details ในไฟล์ฐานข้อมูล User Mapping', list: [], summaryByMapping: [] };
+    var lastRow = giftSheet.getLastRow();
+    var lastColumn = Math.max(13, giftSheet.getLastColumn());
+    if (lastRow < 2) return { success: true, list: [], summaryByMapping: [], summary: { totalCoins: 0, eventCount: 0, uniqueGifters: 0, mappedRecords: 0 }, page: 1, pageSize: pageSize, totalPages: 0, totalRecords: 0 };
+    var giftRows = giftSheet.getRange(1, 1, lastRow, lastColumn).getValues();
+    var headers = giftRows[0] || [];
+    var columns = {
+      recordKey: giftDetailsColumn_(headers, ['Record Key', 'RecordKey'], 0),
+      eventTime: giftDetailsColumn_(headers, ['Event Time', 'EventTime', 'Timestamp'], 1),
+      round: giftDetailsColumn_(headers, ['Round'], 2),
+      vj: giftDetailsColumn_(headers, ['VJ', 'Stage Name', 'StageName'], 3),
+      gifterName: giftDetailsColumn_(headers, ['Gifter Name', 'GifterName', 'User Name'], 4),
+      tiktokId: giftDetailsColumn_(headers, ['TikTok ID', 'TikTokID', 'ID TikTok'], 5),
+      bound: giftDetailsColumn_(headers, ['Bound'], 6),
+      giftName: giftDetailsColumn_(headers, ['Gift Name', 'GiftName', 'Gift'], 7),
+      quantity: giftDetailsColumn_(headers, ['Quantity', 'Qty'], 8),
+      unitPrice: giftDetailsColumn_(headers, ['Unit Price', 'UnitPrice', 'Price'], 9),
+      totalCoins: giftDetailsColumn_(headers, ['Total Coins', 'TotalCoins', 'Coins'], 10)
+    };
+    var mappingSheet = database.getSheetByName('User_Mapping');
+    var mappingRows = mappingSheet && mappingSheet.getLastRow() > 1
+      ? mappingSheet.getRange(1, 1, mappingSheet.getLastRow(), Math.max(10, mappingSheet.getLastColumn())).getValues()
+      : [];
+    var mappingById = Object.create(null);
+    for (var m = 1; m < mappingRows.length; m++) {
+      var mappingKey = normalizeGiftMappingKey_(mappingRows[m][0]);
+      if (mappingKey) mappingById[mappingKey] = {
+        userName: cleanStr_(mappingRows[m][1]),
+        assignedVJ: cleanStr_(mappingRows[m][3]),
+        team: cleanStr_(mappingRows[m][4])
+      };
+    }
+
+    var userKey = userName.toLowerCase();
+    var rows = [];
+    var uniqueGifters = Object.create(null);
+    var mappingTotals = Object.create(null);
+    var totalCoins = 0;
+    var mappedRecords = 0;
+    for (var r = 1; r < giftRows.length; r++) {
+      var source = giftRows[r];
+      var eventTime = giftDetailsEventTime_(source[columns.eventTime]);
+      var eventDateMatch = eventTime.match(/^(\d{4}-\d{2}-\d{2})/);
+      var eventDate = eventDateMatch ? eventDateMatch[1] : '';
+      var tiktokId = cleanStr_(source[columns.tiktokId]);
+      var mapped = mappingById[normalizeGiftMappingKey_(tiktokId)] || null;
+      var vj = cleanStr_(source[columns.vj]);
+      if (!eventTime && !tiktokId && !cleanStr_(source[columns.giftName])) continue;
+      if (userType === 'VJ') {
+        if (vj && vj.toLowerCase() !== userKey) continue;
+        if (!vj && (!mapped || mapped.assignedVJ.toLowerCase() !== userKey)) continue;
+        // A Gift_Details row may mention this VJ while its TikTok ID is mapped
+        // to somebody else's account. Keep the event visible to its VJ owner,
+        // but never expose another mapping's name, team, or aggregate.
+        if (mapped && mapped.assignedVJ.toLowerCase() !== userKey) mapped = null;
+      }
+      if (dateFrom && (!eventDate || eventDate < dateFrom)) continue;
+      if (dateTo && (!eventDate || eventDate > dateTo)) continue;
+      var team = mapped ? mapped.team : '';
+      if (teamFilter && team.toLowerCase() !== teamFilter) continue;
+      var gifterName = cleanStr_(source[columns.gifterName]);
+      var giftName = cleanStr_(source[columns.giftName]);
+      var round = cleanStr_(source[columns.round]);
+      var searchText = [tiktokId, gifterName, giftName, vj, round, mapped && mapped.userName, mapped && mapped.assignedVJ, team].join(' ').toLowerCase();
+      if (query && searchText.indexOf(query) === -1) continue;
+      var quantity = parseDiamondVal_(source[columns.quantity]);
+      var unitPrice = parseDiamondVal_(source[columns.unitPrice]);
+      var coins = parseDiamondVal_(source[columns.totalCoins]);
+      totalCoins += coins;
+      if (mapped) {
+        mappedRecords++;
+        var mapKey = normalizeGiftMappingKey_(tiktokId);
+        var aggregate = mappingTotals[mapKey] || (mappingTotals[mapKey] = { tiktokId: tiktokId, userName: mapped.userName, assignedVJ: mapped.assignedVJ, team: mapped.team, totalCoins: 0, eventCount: 0 });
+        aggregate.totalCoins += coins;
+        aggregate.eventCount++;
+      }
+      var gifterKey = normalizeGiftMappingKey_(tiktokId) || gifterName.toLowerCase();
+      if (gifterKey) uniqueGifters[gifterKey] = true;
+      rows.push({
+        sourceRow: r + 1,
+        eventTime: eventTime,
+        eventDate: eventDate,
+        round: round,
+        vj: vj,
+        gifterName: gifterName,
+        tiktokId: tiktokId,
+        bound: cleanStr_(source[columns.bound]),
+        giftName: giftName,
+        quantity: quantity,
+        unitPrice: unitPrice,
+        totalCoins: coins,
+        isMapped: !!mapped,
+        mappedUserName: mapped ? mapped.userName : '',
+        mappedVJ: mapped ? mapped.assignedVJ : '',
+        team: team
+      });
+    }
+    rows.sort(function(a, b) {
+      if (a.eventTime !== b.eventTime) return a.eventTime < b.eventTime ? 1 : -1;
+      return b.sourceRow - a.sourceRow;
+    });
+    var totalRecords = rows.length;
+    var totalPages = Math.ceil(totalRecords / pageSize);
+    if (totalPages && page > totalPages) page = totalPages;
+    var start = (page - 1) * pageSize;
+    var pageRows = rows.slice(start, start + pageSize);
+    pageRows.forEach(function(item) { delete item.sourceRow; });
+    var topMappings = Object.keys(mappingTotals).map(function(key) { return mappingTotals[key]; });
+    topMappings.sort(function(a, b) { return b.totalCoins - a.totalCoins; });
+    return {
+      success: true,
+      list: pageRows,
+      summaryByMapping: topMappings.slice(0, 30),
+      summary: { totalCoins: totalCoins, eventCount: totalRecords, uniqueGifters: Object.keys(uniqueGifters).length, mappedRecords: mappedRecords },
+      page: page,
+      pageSize: pageSize,
+      totalPages: totalPages,
+      totalRecords: totalRecords
+    };
+  } catch (err) {
+    Logger.log('Gift_Details report failed: ' + err.toString());
+    return { success: false, message: 'โหลดรายงาน Gift_Details ไม่สำเร็จ: ' + err.toString(), list: [], summaryByMapping: [] };
+  }
+}
+
 /**
  * บันทึกหรืออัปเดตข้อมูล User Mapping (สำหรับ Admin)
  */

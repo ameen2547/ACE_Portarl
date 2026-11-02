@@ -166,3 +166,130 @@ test('both User Mapping views provide report filters, summary cards, and history
   assert.ok(frontendSource.includes("setUserMapQuickRange('ADMIN','month')"));
   assert.ok(frontendSource.includes('function renderUserMapTeamSummary'));
 });
+
+function createGiftReportHarness(giftRows, mappingRows, sessionType, sessionName) {
+  const reads = { databaseOpen: 0, giftRead: 0, mappingRead: 0 };
+  function sheet(rows, type) {
+    return {
+      getLastRow: () => rows.length,
+      getLastColumn: () => rows[0] ? rows[0].length : 0,
+      getRange: (row, column, rowCount, columnCount) => ({
+        getValues: () => {
+          reads[type]++;
+          return rows.slice(row - 1, row - 1 + rowCount).map(values => values.slice(column - 1, column - 1 + columnCount));
+        }
+      })
+    };
+  }
+  const giftSheet = sheet(giftRows, 'giftRead');
+  const mappingSheet = sheet(mappingRows, 'mappingRead');
+  const database = {
+    getSheetByName: name => name === 'Gift_Details' ? giftSheet : (name === 'User_Mapping' ? mappingSheet : null)
+  };
+  const context = { console, Logger: { log: () => {} } };
+  vm.createContext(context);
+  vm.runInContext(backendSource, context, { filename: 'code.gs', timeout: 2000 });
+  context.requireSession_ = () => ({ success: true, session: { userName: sessionName, userType: sessionType } });
+  context.getUserMappingDatabase_ = () => { reads.databaseOpen++; return database; };
+  return { context, reads };
+}
+
+const giftHeader = ['Record Key', 'Event Time', 'Round', 'VJ', 'Gifter Name', 'TikTok ID', 'Bound', 'Gift Name', 'Quantity', 'Unit Price', 'Total Coins', 'Collection ID', 'Uploaded By'];
+
+test('Gift_Details report joins TikTok ID to User_Mapping without changing the sheet schema', () => {
+  const gifts = [
+    giftHeader,
+    ['r1', '2026-10-31 10:00:00', 'R1', 'Kim', 'Gifter A', '@giver-a', 'Bound', 'Rose', 2, 1, 2, 'c1', 'uploader'],
+    ['r2', '2026-10-31 11:00:00', 'R1', 'Lee', 'Gifter B', '@giver-b', 'Bound', 'Lion', 1, 10, 10, 'c2', 'uploader'],
+    ['r3', '2026-10-30 09:00:00', 'R2', 'Kim', 'Gifter C', 'giver-c', 'Bound', 'Heart', 4, 1, 4, 'c3', 'uploader']
+  ];
+  const mappings = [
+    liveHeader,
+    ['@giver-a', 'Mapped A', '', 'Kim', 'Team A', 0, 0, TODAY, 'Admin', 0],
+    ['@giver-c', 'Mapped C', '', 'Kim', 'Team A', 0, 0, TODAY, 'Admin', 0]
+  ];
+  const harness = createGiftReportHarness(gifts, mappings, 'ADMIN', 'Admin');
+  const result = harness.context.getGiftDetailsData('admin-token', '127.0.0.1', { team: 'Team A' });
+
+  assert.equal(result.success, true);
+  assert.equal(result.totalRecords, 2);
+  assert.equal(result.summary.totalCoins, 6);
+  assert.equal(result.summary.mappedRecords, 2);
+  assert.equal(result.list.length, 2);
+  assert.equal(result.list[0].mappedUserName, 'Mapped A');
+  assert.equal(result.summaryByMapping[0].tiktokId, 'giver-c');
+  assert.equal(harness.reads.databaseOpen, 1);
+  assert.equal(harness.reads.giftRead, 1);
+  assert.equal(harness.reads.mappingRead, 1);
+});
+
+test('VJ Gift_Details report only returns own VJ rows and own mapped rows with blank VJ', () => {
+  const gifts = [
+    giftHeader,
+    ['r1', '2026-10-31 10:00:00', 'R1', 'Kim', 'Gifter A', '@giver-a', 'Bound', 'Rose', 2, 1, 2, 'c1', 'uploader'],
+    ['r2', '2026-10-31 11:00:00', 'R1', 'Lee', 'Gifter B', '@giver-b', 'Bound', 'Lion', 1, 10, 10, 'c2', 'uploader'],
+    ['r3', '2026-10-30 09:00:00', 'R2', '', 'Gifter C', '@giver-c', 'Bound', 'Heart', 4, 1, 4, 'c3', 'uploader']
+  ];
+  const mappings = [
+    liveHeader,
+    ['@giver-a', 'Mapped A', '', 'Kim', 'Team A', 0, 0, TODAY, 'Admin', 0],
+    ['@giver-b', 'Mapped B', '', 'Lee', 'Team B', 0, 0, TODAY, 'Admin', 0],
+    ['@giver-c', 'Mapped C', '', 'Kim', 'Team A', 0, 0, TODAY, 'Admin', 0]
+  ];
+  const harness = createGiftReportHarness(gifts, mappings, 'VJ', 'Kim');
+  const result = harness.context.getGiftDetailsData('vj-token', '127.0.0.1', {});
+
+  assert.equal(result.success, true);
+  assert.equal(result.totalRecords, 2);
+  assert.deepEqual(Array.from(result.list, row => row.tiktokId), ['@giver-a', '@giver-c']);
+  assert.equal(result.summary.totalCoins, 6);
+  assert.equal(result.list.some(row => row.tiktokId === '@giver-b'), false);
+});
+
+test('VJ Gift_Details rows do not reveal User Mapping details owned by a different VJ', () => {
+  const gifts = [
+    giftHeader,
+    ['r1', '2026-10-31 10:00:00', 'R1', 'Kim', 'Gifter B', '@giver-b', 'Bound', 'Lion', 1, 10, 10, 'c2', 'uploader']
+  ];
+  const mappings = [
+    liveHeader,
+    ['@giver-b', 'Mapped B', '', 'Lee', 'Team B', 0, 0, TODAY, 'Admin', 0]
+  ];
+  const harness = createGiftReportHarness(gifts, mappings, 'VJ', 'Kim');
+  const result = harness.context.getGiftDetailsData('vj-token', '127.0.0.1', {});
+
+  assert.equal(result.totalRecords, 1);
+  assert.equal(result.list[0].isMapped, false);
+  assert.equal(result.list[0].mappedUserName, '');
+  assert.equal(result.list[0].team, '');
+  assert.equal(result.summaryByMapping.length, 0);
+});
+
+test('Gift_Details report pages rows and keeps whole-filter totals', () => {
+  const gifts = [giftHeader];
+  for (let index = 1; index <= 51; index++) {
+    gifts.push(['r' + index, '2026-10-31 10:00:00', 'R1', 'Kim', 'Gifter ' + index, 'gifter-' + index, 'Bound', 'Rose', 1, 1, 1, 'c' + index, 'uploader']);
+  }
+  const harness = createGiftReportHarness(gifts, [liveHeader], 'ADMIN', 'Admin');
+  const firstPage = harness.context.getGiftDetailsData('admin-token', '127.0.0.1', { page: 1 });
+  const secondPage = harness.context.getGiftDetailsData('admin-token', '127.0.0.1', { page: 2 });
+
+  assert.equal(firstPage.list.length, 50);
+  assert.equal(firstPage.totalPages, 2);
+  assert.equal(firstPage.totalRecords, 51);
+  assert.equal(firstPage.summary.totalCoins, 51);
+  assert.equal(secondPage.list.length, 1);
+  assert.equal(secondPage.page, 2);
+  assert.equal(Object.hasOwn(firstPage.list[0], 'sourceRow'), false);
+});
+
+test('both User Mapping views expose Gift_Details report tabs and filtered pages', () => {
+  for (const id of [
+    'vjUserMapTabGifts', 'vjUserMapGiftsPanel', 'vjGiftDateFrom', 'vjGiftTeamFilter', 'vjGiftReportTbody',
+    'admUserMapTabGifts', 'admUserMapGiftsPanel', 'admGiftDateFrom', 'admGiftTeamFilter', 'admGiftReportTbody'
+  ]) {
+    assert.ok(frontendSource.includes('id="' + id + '"'), 'missing Gift_Details UI element: ' + id);
+  }
+  assert.ok(frontendSource.includes('.getGiftDetailsData(sessionToken, clientIpAddress, options)'));
+  assert.ok(frontendSource.includes('function renderGiftDetailsReport'));
+});
