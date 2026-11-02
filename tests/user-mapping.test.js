@@ -154,3 +154,15 @@ test('inline frontend JavaScript parses without syntax errors', () => {
   }
   assert.ok(parsedCount > 0, 'expected at least one inline application script');
 });
+
+test('both User Mapping views provide report filters, summary cards, and history tabs', () => {
+  for (const id of [
+    'vjUserMapTeamFilter', 'vjUserMapDateFrom', 'vjUserMapDateTo', 'vjUmMetricUsers', 'vjUserMapTabHistory',
+    'admUserMapTeamFilter', 'admUserMapDateFrom', 'admUserMapDateTo', 'admUmMetricUsers', 'admUserMapTabHistory'
+  ]) {
+    assert.ok(frontendSource.includes('id="' + id + '"'), 'missing report UI element: ' + id);
+  }
+  assert.ok(frontendSource.includes("setUserMapQuickRange('VJ','week')"));
+  assert.ok(frontendSource.includes("setUserMapQuickRange('ADMIN','month')"));
+  assert.ok(frontendSource.includes('function renderUserMapTeamSummary'));
+});

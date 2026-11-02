@@ -76,6 +76,40 @@
     .ace-announcement-ticker:hover .ace-announcement-marquee { animation-play-state:paused; }
     @media (prefers-reduced-motion: reduce) { .ace-announcement-marquee { animation:none; } }
 
+    /* Report-inspired User Mapping workspace */
+    .ace-um-report { gap:1rem; }
+    .ace-um-report:not(.hidden) { display:grid; }
+    .ace-um-breadcrumb { display:flex; align-items:center; gap:.5rem; color:#94a3b8; font-size:.72rem; font-weight:600; }
+    .ace-um-breadcrumb strong { color:#334155; font-size:.82rem; }
+    .ace-um-filterbar { display:grid; grid-template-columns:minmax(220px,1.5fr) minmax(150px,.8fr) repeat(2,minmax(140px,.7fr)); gap:.65rem; align-items:center; }
+    .ace-um-filterbar input,.ace-um-filterbar select { width:100%; min-height:42px; border:1px solid #dbe3ef; border-radius:.75rem; background:#fff; padding:.6rem .75rem; color:#334155; font-size:.78rem; outline:none; }
+    .ace-um-filterbar input:focus,.ace-um-filterbar select:focus { border-color:#818cf8; box-shadow:0 0 0 3px rgba(99,102,241,.12); }
+    .ace-um-range-row { display:flex; flex-wrap:wrap; align-items:center; gap:.45rem; }
+    .ace-um-range-btn { border:1px solid #e2e8f0; border-radius:999px; background:#fff; color:#64748b; padding:.4rem .75rem; font-size:.68rem; font-weight:700; transition:.15s; }
+    .ace-um-range-btn:hover,.ace-um-range-btn.active { border-color:#c7d2fe; background:#eef2ff; color:#4338ca; }
+    .ace-um-summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.75rem; }
+    .ace-um-summary-card { border:1px solid #e8edf5; border-radius:1rem; background:#fff; padding:1rem; min-width:0; box-shadow:0 3px 12px rgba(15,23,42,.035); }
+    .ace-um-summary-label { color:#8793a6; font-size:.68rem; font-weight:600; }
+    .ace-um-summary-value { margin-top:.45rem; color:#1e293b; font-size:1.35rem; line-height:1.2; font-weight:800; }
+    .ace-um-tabs { display:flex; width:max-content; max-width:100%; gap:.35rem; border:1px solid #e5eaf2; border-radius:.8rem; background:#f8fafc; padding:.28rem; }
+    .ace-um-tab { border-radius:.6rem; padding:.55rem .85rem; color:#64748b; font-size:.72rem; font-weight:700; transition:.15s; }
+    .ace-um-tab.active { background:#fff; color:#4338ca; box-shadow:0 1px 4px rgba(15,23,42,.1); }
+    .ace-um-panel { min-width:0; }
+    .ace-um-report-table thead { position:sticky; top:0; z-index:2; }
+    .ace-um-report-table th { background:#f8fafc; }
+    .ace-um-team-bars { display:grid; gap:.6rem; }
+    .ace-um-team-row { display:grid; grid-template-columns:minmax(80px,150px) minmax(0,1fr) 2.5rem; align-items:center; gap:.6rem; color:#64748b; font-size:.68rem; }
+    .ace-um-team-track { height:.45rem; overflow:hidden; border-radius:999px; background:#eef2f7; }
+    .ace-um-team-fill { height:100%; border-radius:inherit; background:linear-gradient(90deg,#6366f1,#8b5cf6); }
+    @media(max-width:1023px) {
+      .ace-um-filterbar { grid-template-columns:1fr 1fr; }
+      .ace-um-filterbar .ace-um-search { grid-column:1/-1; }
+      .ace-um-summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:.55rem; }
+      .ace-um-summary-card { padding:.8rem; }
+      .ace-um-summary-value { font-size:1.15rem; }
+      .ace-um-team-row { grid-template-columns:75px minmax(0,1fr) 2rem; }
+    }
+
 .shsojvp {
   @apply inline-flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold bg-slate-800 text-slate-300 hover:bg-slate-700 transition;
 }
@@ -580,28 +614,52 @@
     </div>
 
     <!-- 2. Container แสดงตารางฝั่ง VJ (ใส่ต่อท้าย VJ Views เดิม) -->
-    <div id="vjViewUserMap" class="space-y-4 hidden">
+    <div id="vjViewUserMap" class="ace-um-report hidden">
       <div class="bg-white rounded-3xl p-6 shadow-sm border border-slate-200/80 space-y-4">
-        <div
-          class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-100 pb-3">
+        <div class="flex flex-col gap-3 border-b border-slate-100 pb-4">
+          <div class="ace-um-breadcrumb"><span>รายงาน</span><span>›</span><strong>User Mapping</strong><span id="vjUserMapUpdatedAt" class="ml-auto text-[10px] font-normal text-slate-400"></span></div>
           <div>
-            <h3 class="font-bold text-slate-800 text-base flex items-center gap-2">
-              📱 รายชื่อ User Mapping ที่ได้ส่ง Coin ให้
+            <h3 class="font-bold text-slate-800 text-lg flex items-center gap-2">
+              📊 รายงาน User Mapping
             </h3>
-            <p class="text-xs text-slate-400">กรองเฉพาะข้อมูลผู้ใช้งาน TikTok ที่ถูกระบุ Assigned VJ ตรงกับชื่อของคุณ
+            <p class="text-xs text-slate-400 mt-1">ข้อมูลผู้ใช้ที่ถูกมอบหมายให้คุณ พร้อมสถานะและประวัติแยกตามวัน
             </p>
           </div>
-          <div class="flex items-center gap-2 w-full sm:w-auto">
-            <input type="text" id="vjSearchUserMap" oninput="filterVJUserMapTable()" placeholder="🔍 ค้นหา ID TikTok / User Name..." class="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500 w-full sm:w-64">
+          <div class="ace-um-filterbar">
+            <input class="ace-um-search" type="search" id="vjSearchUserMap" oninput="filterVJUserMapTable()" placeholder="ค้นหา ID TikTok, ชื่อผู้ใช้ หรือทีม..." aria-label="ค้นหา User Mapping">
+            <select id="vjUserMapTeamFilter" onchange="filterVJUserMapTable()" aria-label="กรองตามทีม"><option value="">ทุกทีม</option></select>
+            <input id="vjUserMapDateFrom" type="date" onchange="clearUserMapQuickRange('VJ');filterVJUserMapTable()" aria-label="วันที่เริ่มต้น">
+            <input id="vjUserMapDateTo" type="date" onchange="clearUserMapQuickRange('VJ');filterVJUserMapTable()" aria-label="วันที่สิ้นสุด">
+          </div>
+          <div class="ace-um-range-row" aria-label="เลือกช่วงวันที่ด่วน">
+            <span class="text-[10px] font-semibold text-slate-400 mr-1">ช่วงวันที่</span>
+            <button type="button" class="ace-um-range-btn" data-range="all" onclick="setUserMapQuickRange('VJ','all')">ทั้งหมด</button>
+            <button type="button" class="ace-um-range-btn" data-range="today" onclick="setUserMapQuickRange('VJ','today')">วันนี้</button>
+            <button type="button" class="ace-um-range-btn" data-range="week" onclick="setUserMapQuickRange('VJ','week')">7 วันล่าสุด</button>
+            <button type="button" class="ace-um-range-btn" data-range="month" onclick="setUserMapQuickRange('VJ','month')">เดือนนี้</button>
           </div>
         </div>
 
-        <div class="rounded-2xl border border-indigo-100 bg-indigo-50/40 p-4 space-y-3">
+        <div class="ace-um-summary-grid">
+          <article class="ace-um-summary-card"><div class="ace-um-summary-label">👥 บัญชีที่มอบหมาย</div><div id="vjUmMetricUsers" class="ace-um-summary-value">—</div></article>
+          <article class="ace-um-summary-card"><div class="ace-um-summary-label">🏷️ ทีม</div><div id="vjUmMetricTeams" class="ace-um-summary-value">—</div></article>
+          <article class="ace-um-summary-card"><div class="ace-um-summary-label">✅ อัปเดตวันนี้</div><div id="vjUmMetricToday" class="ace-um-summary-value text-emerald-600">—</div></article>
+          <article class="ace-um-summary-card"><div class="ace-um-summary-label">🗂️ รายการในประวัติ</div><div id="vjUmMetricHistory" class="ace-um-summary-value text-indigo-600">—</div></article>
+        </div>
+
+        <div id="vjUserMapTeamSummary" class="rounded-2xl border border-slate-100 bg-slate-50/70 p-4 space-y-3"></div>
+
+        <div class="ace-um-tabs" role="tablist" aria-label="รายงาน User Mapping">
+          <button id="vjUserMapTabCurrent" class="ace-um-tab active" role="tab" aria-selected="true" onclick="switchUserMapPanel('VJ','current')">รายการปัจจุบัน</button>
+          <button id="vjUserMapTabHistory" class="ace-um-tab" role="tab" aria-selected="false" onclick="switchUserMapPanel('VJ','history')">ประวัติรายวัน</button>
+        </div>
+
+        <div id="vjUserMapHistoryPanel" class="ace-um-panel hidden rounded-2xl border border-indigo-100 bg-indigo-50/40 p-4 space-y-3">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2"><div><h4 class="font-bold text-slate-800 text-sm">ประวัติ User Mapping รายวัน</h4><p class="text-[11px] text-slate-500">จัดกลุ่มตามวันที่ → ทีม → VJ → บุคคล</p></div><div class="flex flex-wrap items-center gap-2"><select id="vjUserMapHistoryDate" onchange="renderUserMapHistory(cachedUserMapHistory,'vjUserMapHistoryDate','vjUserMapHistoryGroups')" class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"><option value="all">ทุกวันที่มีประวัติ</option></select><button id="vjUserMapHistoryMore" type="button" onclick="loadOlderUserMapHistory('VJ')" class="hidden rounded-xl border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50">โหลดประวัติเก่ากว่า</button></div></div>
           <div id="vjUserMapHistoryGroups" class="space-y-3"></div>
         </div>
-        <div class="overflow-x-auto custom-scrollbar">
-          <table class="w-full text-left text-xs border-collapse">
+        <div id="vjUserMapCurrentPanel" class="ace-um-panel overflow-x-auto custom-scrollbar">
+          <table class="ace-um-report-table w-full text-left text-xs border-collapse">
             <thead>
               <tr class="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
                 <th class="p-3 text-center">สถานะวันนี้</th>
@@ -1242,25 +1300,47 @@
     </section>
 
     <!-- 2. Section ตารางแสดงผลทั้งหมดฝั่ง Admin (ใส่ต่อท้าย Admin Views เดิม) -->
-    <section id="admViewUserMap" class="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-6 space-y-4 hidden">
-      <div
-        class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-100 pb-3">
-        <div>
-          <h3 class="font-bold text-slate-800 text-base flex items-center gap-2">
-            📱 จัดการข้อมูล User Mapping ทั้งหมด (Admin View)
-          </h3>
-          <p class="text-xs text-slate-400">ข้อมูลปัจจุบันอ่าน/บันทึกที่ไฟล์ฐาน User_Mapping (คงคอลัมน์ A–J) พร้อมประวัติรายวัน</p>
+    <section id="admViewUserMap" class="ace-um-report bg-white rounded-3xl shadow-sm border border-slate-200/80 p-6 space-y-4 hidden">
+      <div class="flex flex-col gap-3 border-b border-slate-100 pb-4">
+        <div class="ace-um-breadcrumb"><span>รายงาน</span><span>›</span><strong>User Mapping</strong><span id="admUserMapUpdatedAt" class="ml-auto text-[10px] font-normal text-slate-400"></span></div>
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h3 class="font-bold text-slate-800 text-lg flex items-center gap-2">📊 รายงาน User Mapping</h3>
+            <p class="text-xs text-slate-400 mt-1">ภาพรวมการมอบหมาย แยกตามทีม VJ และประวัติรายวัน · คงโครงสร้างชีต A–J</p>
+          </div>
+          <button onclick="openUserMapModal()" class="px-3.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm transition whitespace-nowrap">＋ เพิ่ม/แก้ไข User</button>
         </div>
-        <div class="flex items-center gap-2 w-full sm:w-auto">
-          <input type="text" id="admSearchUserMap" oninput="filterAdminUserMapTable()" placeholder="🔍 ค้นหา TikTok ID / User Name / VJ / ทีม..." class="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs outline-none focus:ring-2 focus:ring-purple-500 w-full sm:w-64">
-          <button onclick="openUserMapModal()" class="px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded-xl shadow-md transition whitespace-nowrap">
-        ➕ เพิ่ม/แก้ไข User
-      </button>
+        <div class="ace-um-filterbar">
+          <input class="ace-um-search" type="search" id="admSearchUserMap" oninput="filterAdminUserMapTable()" placeholder="ค้นหา ID TikTok, ชื่อผู้ใช้, VJ หรือทีม..." aria-label="ค้นหา User Mapping">
+          <select id="admUserMapTeamFilter" onchange="filterAdminUserMapTable()" aria-label="กรองตามทีม"><option value="">ทุกทีม</option></select>
+          <input id="admUserMapDateFrom" type="date" onchange="clearUserMapQuickRange('ADMIN');filterAdminUserMapTable()" aria-label="วันที่เริ่มต้น">
+          <input id="admUserMapDateTo" type="date" onchange="clearUserMapQuickRange('ADMIN');filterAdminUserMapTable()" aria-label="วันที่สิ้นสุด">
+        </div>
+        <div class="ace-um-range-row" aria-label="เลือกช่วงวันที่ด่วน">
+          <span class="text-[10px] font-semibold text-slate-400 mr-1">ช่วงวันที่</span>
+          <button type="button" class="ace-um-range-btn" data-range="all" onclick="setUserMapQuickRange('ADMIN','all')">ทั้งหมด</button>
+          <button type="button" class="ace-um-range-btn" data-range="today" onclick="setUserMapQuickRange('ADMIN','today')">วันนี้</button>
+          <button type="button" class="ace-um-range-btn" data-range="week" onclick="setUserMapQuickRange('ADMIN','week')">7 วันล่าสุด</button>
+          <button type="button" class="ace-um-range-btn" data-range="month" onclick="setUserMapQuickRange('ADMIN','month')">เดือนนี้</button>
         </div>
       </div>
 
-      <div class="overflow-x-auto custom-scrollbar">
-        <table class="w-full text-left text-xs border-collapse">
+      <div class="ace-um-summary-grid">
+        <article class="ace-um-summary-card"><div class="ace-um-summary-label">👥 บัญชีที่มอบหมาย</div><div id="admUmMetricUsers" class="ace-um-summary-value">—</div></article>
+        <article class="ace-um-summary-card"><div class="ace-um-summary-label">👤 VJ ที่รับผิดชอบ</div><div id="admUmMetricVjs" class="ace-um-summary-value">—</div></article>
+        <article class="ace-um-summary-card"><div class="ace-um-summary-label">🏷️ ทีม</div><div id="admUmMetricTeams" class="ace-um-summary-value">—</div></article>
+        <article class="ace-um-summary-card"><div class="ace-um-summary-label">✅ อัปเดตวันนี้</div><div id="admUmMetricToday" class="ace-um-summary-value text-emerald-600">—</div></article>
+      </div>
+
+      <div id="admUserMapTeamSummary" class="rounded-2xl border border-slate-100 bg-slate-50/70 p-4 space-y-3"></div>
+
+      <div class="ace-um-tabs" role="tablist" aria-label="รายงาน User Mapping">
+        <button id="admUserMapTabCurrent" class="ace-um-tab active" role="tab" aria-selected="true" onclick="switchUserMapPanel('ADMIN','current')">รายการปัจจุบัน</button>
+        <button id="admUserMapTabHistory" class="ace-um-tab" role="tab" aria-selected="false" onclick="switchUserMapPanel('ADMIN','history')">ประวัติรายวัน</button>
+      </div>
+
+      <div id="admUserMapCurrentPanel" class="ace-um-panel overflow-x-auto custom-scrollbar">
+        <table class="ace-um-report-table w-full text-left text-xs border-collapse">
           <thead>
             <tr class="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
               <th class="p-3 text-center">สถานะวันนี้</th>
@@ -1277,7 +1357,7 @@
           <tbody id="admUserMapTbody" class="divide-y divide-slate-100"></tbody>
         </table>
       </div>
-      <div class="rounded-2xl border border-indigo-100 bg-indigo-50/40 p-4 space-y-3">
+      <div id="admUserMapHistoryPanel" class="ace-um-panel hidden rounded-2xl border border-indigo-100 bg-indigo-50/40 p-4 space-y-3">
         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2"><div><h4 class="font-bold text-slate-800 text-sm">ประวัติ User Mapping รายวัน</h4><p class="text-[11px] text-slate-500">Snapshot แยกตามวันที่ → ทีม → VJ → บุคคล (ข้อมูลปัจจุบันใน A–J ไม่ถูกเปลี่ยน)</p></div><div class="flex flex-wrap items-center gap-2"><select id="admUserMapHistoryDate" onchange="renderUserMapHistory(cachedUserMapHistory,'admUserMapHistoryDate','admUserMapHistoryGroups')" class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"><option value="all">ทุกวันที่มีประวัติ</option></select><button id="admUserMapHistoryMore" type="button" onclick="loadOlderUserMapHistory('ADMIN')" class="hidden rounded-xl border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50">โหลดประวัติเก่ากว่า</button></div></div>
         <div id="admUserMapHistoryGroups" class="space-y-3"></div>
       </div>
@@ -3556,6 +3636,142 @@ function updateUserMapHistoryMoreButton(userType, loading) {
   button.textContent = loading ? 'กำลังโหลด...' : 'โหลดประวัติเก่ากว่า';
 }
 
+function userMapLocalDate(value) {
+  var match = mappingText(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return '';
+  return match[1] + '-' + match[2] + '-' + match[3];
+}
+
+function switchUserMapPanel(userType, panel) {
+  var prefix = userType === 'ADMIN' ? 'adm' : 'vj';
+  var current = panel === 'current';
+  var currentPanel = document.getElementById(prefix + 'UserMapCurrentPanel');
+  var historyPanel = document.getElementById(prefix + 'UserMapHistoryPanel');
+  var currentTab = document.getElementById(prefix + 'UserMapTabCurrent');
+  var historyTab = document.getElementById(prefix + 'UserMapTabHistory');
+  if (currentPanel) currentPanel.classList.toggle('hidden', !current);
+  if (historyPanel) historyPanel.classList.toggle('hidden', current);
+  if (currentTab) { currentTab.classList.toggle('active', current); currentTab.setAttribute('aria-selected', String(current)); }
+  if (historyTab) { historyTab.classList.toggle('active', !current); historyTab.setAttribute('aria-selected', String(!current)); }
+}
+
+function populateUserMapTeamFilter(userType) {
+  var select = document.getElementById(userType === 'ADMIN' ? 'admUserMapTeamFilter' : 'vjUserMapTeamFilter');
+  if (!select) return;
+  var selected = select.value;
+  var teams = Array.from(new Set(cachedUserMapData.map(function(item) { return mappingText(item.team).trim(); }).filter(Boolean))).sort(function(a,b) { return a.localeCompare(b); });
+  select.innerHTML = '<option value="">ทุกทีม</option>';
+  teams.forEach(function(team) {
+    var option = document.createElement('option');
+    option.value = team;
+    option.textContent = team;
+    select.appendChild(option);
+  });
+  if (teams.indexOf(selected) !== -1) select.value = selected;
+}
+
+function renderUserMapTeamSummary(userType, list) {
+  var container = document.getElementById(userType === 'ADMIN' ? 'admUserMapTeamSummary' : 'vjUserMapTeamSummary');
+  if (!container) return;
+  var counts = Object.create(null);
+  (list || []).forEach(function(item) {
+    var team = mappingText(item.team).trim() || 'ไม่ระบุทีม';
+    counts[team] = (counts[team] || 0) + 1;
+  });
+  var rows = Object.keys(counts).map(function(team) { return { team: team, count: counts[team] }; }).sort(function(a,b) { return b.count - a.count || a.team.localeCompare(b.team); }).slice(0, 8);
+  container.innerHTML = '';
+  var title = document.createElement('div');
+  title.className = 'text-xs font-bold text-slate-700';
+  title.textContent = 'ภาพรวมตามทีม';
+  container.appendChild(title);
+  if (!rows.length) {
+    var empty = document.createElement('p'); empty.className = 'text-[11px] text-slate-400'; empty.textContent = 'ไม่มีข้อมูลตามตัวกรอง'; container.appendChild(empty); return;
+  }
+  var max = rows[0].count;
+  var bars = document.createElement('div'); bars.className = 'ace-um-team-bars';
+  rows.forEach(function(row) {
+    var line = document.createElement('div'); line.className = 'ace-um-team-row';
+    var name = document.createElement('span'); name.className = 'truncate'; name.textContent = row.team;
+    var track = document.createElement('div'); track.className = 'ace-um-team-track';
+    var fill = document.createElement('div'); fill.className = 'ace-um-team-fill'; fill.style.width = Math.max(4, Math.round(row.count / max * 100)) + '%'; track.appendChild(fill);
+    var count = document.createElement('span'); count.className = 'text-right font-semibold text-slate-600'; count.textContent = String(row.count);
+    line.appendChild(name); line.appendChild(track); line.appendChild(count); bars.appendChild(line);
+  });
+  container.appendChild(bars);
+}
+
+function updateUserMapReport(userType) {
+  var isAdmin = userType === 'ADMIN';
+  var prefix = isAdmin ? 'adm' : 'vj';
+  var search = document.getElementById(prefix + 'SearchUserMap');
+  var teamSelect = document.getElementById(prefix + 'UserMapTeamFilter');
+  var dateFrom = document.getElementById(prefix + 'UserMapDateFrom');
+  var dateTo = document.getElementById(prefix + 'UserMapDateTo');
+  var query = mappingText(search && search.value).trim().toLowerCase();
+  var team = mappingText(teamSelect && teamSelect.value).trim().toLowerCase();
+  var from = mappingText(dateFrom && dateFrom.value);
+  var to = mappingText(dateTo && dateTo.value);
+  var filtered = cachedUserMapData.filter(function(item) {
+    var searchable = [item.tiktokId, item.userName, item.assignedVJ, item.team].map(function(value) { return mappingText(value).toLowerCase(); }).join(' ');
+    var date = userMapLocalDate(item.updatedDate);
+    return (!query || searchable.indexOf(query) !== -1) &&
+      (!team || mappingText(item.team).trim().toLowerCase() === team) &&
+      (!from || (date && date >= from)) && (!to || (date && date <= to));
+  });
+
+  if (isAdmin) renderAdminUserMapTable(filtered);
+  else renderVJUserMapTable(filtered);
+
+  var teams = new Set(filtered.map(function(item) { return mappingText(item.team).trim(); }).filter(Boolean));
+  var vjs = new Set(filtered.map(function(item) { return mappingText(item.assignedVJ).trim(); }).filter(Boolean));
+  var todayCount = filtered.filter(function(item) { return !!item.isUpdatedToday; }).length;
+  var setMetric = function(id, value) { var node = document.getElementById(id); if (node) node.textContent = Number(value || 0).toLocaleString(); };
+  if (isAdmin) {
+    setMetric('admUmMetricUsers', filtered.length);
+    setMetric('admUmMetricVjs', vjs.size);
+    setMetric('admUmMetricTeams', teams.size);
+    setMetric('admUmMetricToday', todayCount);
+  } else {
+    setMetric('vjUmMetricUsers', filtered.length);
+    setMetric('vjUmMetricTeams', teams.size);
+    setMetric('vjUmMetricToday', todayCount);
+    setMetric('vjUmMetricHistory', cachedUserMapHistory.length);
+  }
+  renderUserMapTeamSummary(userType, filtered);
+}
+
+function markUserMapReportLoaded(userType) {
+  var stamp = document.getElementById((userType === 'ADMIN' ? 'adm' : 'vj') + 'UserMapUpdatedAt');
+  if (stamp) stamp.textContent = 'อัปเดต ' + new Date().toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function setUserMapQuickRange(userType, range) {
+  var prefix = userType === 'ADMIN' ? 'adm' : 'vj';
+  var from = document.getElementById(prefix + 'UserMapDateFrom');
+  var to = document.getElementById(prefix + 'UserMapDateTo');
+  var end = new Date();
+  var start = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  if (range === 'today') {
+    // start and end are already today
+  } else if (range === 'week') {
+    start.setDate(start.getDate() - 6);
+  } else if (range === 'month') {
+    start.setDate(1);
+  }
+  function asDateInput(date) { return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0'); }
+  if (from) from.value = range === 'all' ? '' : asDateInput(start);
+  if (to) to.value = range === 'all' ? '' : asDateInput(end);
+  document.querySelectorAll('#' + (userType === 'ADMIN' ? 'admViewUserMap' : 'vjViewUserMap') + ' .ace-um-range-btn').forEach(function(button) {
+    button.classList.toggle('active', button.getAttribute('data-range') === range);
+  });
+  updateUserMapReport(userType);
+}
+
+function clearUserMapQuickRange(userType) {
+  var sectionId = userType === 'ADMIN' ? 'admViewUserMap' : 'vjViewUserMap';
+  document.querySelectorAll('#' + sectionId + ' .ace-um-range-btn').forEach(function(button) { button.classList.remove('active'); });
+}
+
 function loadOlderUserMapHistory(userType) {
   if (userMapHistoryPageLoading || !cachedUserMapHistoryHasMore) return;
   var isAdmin = userType === 'ADMIN';
@@ -3582,6 +3798,10 @@ function loadOlderUserMapHistory(userType) {
     userMapHistoryPageLoading = false;
     if (isAdmin) renderUserMapHistory(cachedUserMapHistory, 'admUserMapHistoryDate', 'admUserMapHistoryGroups');
     else renderUserMapHistory(cachedUserMapHistory, 'vjUserMapHistoryDate', 'vjUserMapHistoryGroups');
+    if (!isAdmin) {
+      var historyMetric = document.getElementById('vjUmMetricHistory');
+      if (historyMetric) historyMetric.textContent = cachedUserMapHistory.length.toLocaleString();
+    }
     updateUserMapHistoryMoreButton(userType);
   }, cachedUserMapHistoryOffset, function() {
     userMapHistoryPageLoading = false;
@@ -3606,7 +3826,9 @@ function loadUserMappingForVJ() {
     cachedUserMapHistory = res.historyList || [];
     cachedUserMapHistoryOffset = Number(res.historyNextOffset) || cachedUserMapHistory.length;
     cachedUserMapHistoryHasMore = !!res.historyHasMore;
-    renderVJUserMapTable(cachedUserMapData);
+    populateUserMapTeamFilter('VJ');
+    setUserMapQuickRange('VJ', 'all');
+    markUserMapReportLoaded('VJ');
     // Avatar cache is for the current mapping table. Historical cards keep their
     // lightweight image fallback and should not trigger hundreds of extra RPCs.
     loadMappingAvatarCache(cachedUserMapData);
@@ -3769,13 +3991,7 @@ function renderVJUserMapTable(list) {
 
 
 function filterVJUserMapTable() {
-  var query = document.getElementById('vjSearchUserMap').value.toLowerCase();
-  var filtered = cachedUserMapData.filter(function(item) {
-    return mappingText(item.tiktokId).toLowerCase().indexOf(query) !== -1 ||
-           mappingText(item.userName).toLowerCase().indexOf(query) !== -1 ||
-           mappingText(item.team).toLowerCase().indexOf(query) !== -1;
-  });
-  renderVJUserMapTable(filtered);
+  updateUserMapReport('VJ');
 }
 
 // ------------------------------------------
@@ -3794,7 +4010,9 @@ function loadUserMappingForAdmin() {
     cachedUserMapHistory = res.historyList || [];
     cachedUserMapHistoryOffset = Number(res.historyNextOffset) || cachedUserMapHistory.length;
     cachedUserMapHistoryHasMore = !!res.historyHasMore;
-    renderAdminUserMapTable(cachedUserMapData);
+    populateUserMapTeamFilter('ADMIN');
+    setUserMapQuickRange('ADMIN', 'all');
+    markUserMapReportLoaded('ADMIN');
     loadMappingAvatarCache(cachedUserMapData);
     renderUserMapHistory(cachedUserMapHistory, 'admUserMapHistoryDate', 'admUserMapHistoryGroups');
     populateUserMapVJDropdown();
@@ -3843,14 +4061,7 @@ function renderAdminUserMapTable(list) {
 }
 
 function filterAdminUserMapTable() {
-  var query = document.getElementById('admSearchUserMap').value.toLowerCase();
-  var filtered = cachedUserMapData.filter(function(item) {
-    return mappingText(item.tiktokId).toLowerCase().indexOf(query) !== -1 ||
-           mappingText(item.userName).toLowerCase().indexOf(query) !== -1 ||
-           mappingText(item.assignedVJ).toLowerCase().indexOf(query) !== -1 ||
-           mappingText(item.team).toLowerCase().indexOf(query) !== -1;
-  });
-  renderAdminUserMapTable(filtered);
+  updateUserMapReport('ADMIN');
 }
 
 function populateUserMapVJDropdown() {
