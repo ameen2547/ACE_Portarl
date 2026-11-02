@@ -3852,7 +3852,7 @@ function giftReportProfileCell(row, id, label, fallbackSource) {
 
 function safeGiftReportImageSource(value) {
   var source = mappingText(value).trim();
-  return /^https:\/\/([a-z0-9-]+\.)*tiktokcdn(?:-[a-z0-9-]+)?\.com(?:\/[^\s"'<>]*)?$/i.test(source) ? source : '';
+  return /^https:\/\/beetgames\.com\/images\/gifts\/[a-z0-9_-]+\.(?:webp|png|jpe?g)$/i.test(source) ? source : '';
 }
 
 function giftReportGiftCell(row, item) {

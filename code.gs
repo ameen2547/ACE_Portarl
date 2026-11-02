@@ -2254,8 +2254,8 @@ function giftDetailsColumn_(headers, aliases, fallbackIndex) {
   return fallbackIndex;
 }
 
-var GIFT_IMAGE_CATALOG_URL = 'https://raw.githubusercontent.com/antiops/tiktok-trending-data/main/live-gift-details.json';
-var GIFT_IMAGE_CACHE_KEY = 'ACE_GIFT_IMAGE_LOOKUP_V1';
+var GIFT_IMAGE_CATALOG_URL = 'https://beetgames.com/tiktok-gifts.json';
+var GIFT_IMAGE_CACHE_KEY = 'ACE_GIFT_IMAGE_LOOKUP_BEETGAMES_V1';
 
 function normalizeGiftImageKey_(value) {
   var text = cleanStr_(value).toLowerCase();
@@ -2264,8 +2264,11 @@ function normalizeGiftImageKey_(value) {
 }
 
 function safeGiftImageUrl_(value) {
-  var url = cleanStr_(value);
-  return /^https:\/\/([a-z0-9-]+\.)*tiktokcdn(?:-[a-z0-9-]+)?\.com(?:\/[^\s"'<>]*)?$/i.test(url) ? url : '';
+  var imagePath = cleanStr_(value);
+  var relativeMatch = imagePath.match(/^\/images\/gifts\/[a-z0-9_-]+\.(?:webp|png|jpe?g)$/i);
+  if (relativeMatch) return 'https://beetgames.com' + relativeMatch[0];
+  var absoluteMatch = imagePath.match(/^https:\/\/beetgames\.com(\/images\/gifts\/[a-z0-9_-]+\.(?:webp|png|jpe?g))$/i);
+  return absoluteMatch ? 'https://beetgames.com' + absoluteMatch[1] : '';
 }
 
 // Resolve only the gift names currently used by the report. Cache the small
@@ -2296,19 +2299,14 @@ function getGiftImageUrls_(giftNames) {
       var response = UrlFetchApp.fetch(GIFT_IMAGE_CATALOG_URL, { muteHttpExceptions: true, followRedirects: true, headers: { 'User-Agent': 'ACEContentPortal/1.0' } });
       if (response.getResponseCode() >= 200 && response.getResponseCode() < 300) {
         var payload = JSON.parse(response.getContentText());
-        var catalog = Array.isArray(payload) ? payload : (payload && payload.data && Array.isArray(payload.data.gifts) ? payload.data.gifts : []);
+        var catalog = payload && Array.isArray(payload.gifts) ? payload.gifts : (Array.isArray(payload) ? payload : (payload && payload.data && Array.isArray(payload.data.gifts) ? payload.data.gifts : []));
         var wanted = Object.create(null);
         missing.forEach(function(key) { wanted[key] = true; });
         catalog.forEach(function(gift) {
           if (!gift) return;
           var key = normalizeGiftImageKey_(gift.name);
           if (!wanted[key] || (Object.prototype.hasOwnProperty.call(imageMap, key) && imageMap[key])) return;
-          var image = gift.image || {};
-          var candidates = image.url_list || image.urlList || [];
-          if (!Array.isArray(candidates)) candidates = [];
-          if (gift.icon) candidates.unshift(gift.icon);
-          var safeUrl = '';
-          for (var i = 0; i < candidates.length && !safeUrl; i++) safeUrl = safeGiftImageUrl_(candidates[i]);
+          var safeUrl = safeGiftImageUrl_(gift.image_url || gift.imageUrl || '');
           if (safeUrl || !Object.prototype.hasOwnProperty.call(imageMap, key)) imageMap[key] = safeUrl;
         });
       }
