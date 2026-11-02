@@ -1833,6 +1833,83 @@ function getAdminDashboardData(adminName, adminPin, selectedMonth, ipAddress, de
 }
 
 
+/**
+ * Reveal one VJ credential only after the current Admin re-confirms their PIN.
+ * The PIN is checked server-side; audit logs exclude both the PIN and password.
+ */
+function getVjPasswordForAdmin(vjStageName, adminPin, sessionToken, ipAddress, deviceInfo) {
+  try {
+    var auth = requireSession_(sessionToken, 'ADMIN', ipAddress);
+    if (!auth.success) return { success: false, message: auth.message };
+
+    var adminName = cleanStr_(auth.session.userName);
+    var adminKey = adminName.toLowerCase();
+    var stageName = cleanStr_(vjStageName);
+    if (!stageName || stageName.length > 100) return { success: false, message: 'กรุณาเลือกบัญชีที่ต้องการตรวจสอบ' };
+    if (isLoginRateLimited_('ADMIN_PASSWORD_VIEW', adminKey)) {
+      return { success: false, message: 'ยืนยันไม่สำเร็จหลายครั้ง กรุณารอสักครู่แล้วลองใหม่' };
+    }
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var adminSheet = ss.getSheetByName('Admins') || ss.getSheetByName('admins') || ss.getSheetByName('ADMINS');
+    var adminValues = adminSheet ? adminSheet.getDataRange().getDisplayValues() : [];
+    var adminHeader = adminValues[0] || [];
+    var nameIdx = 0, pinIdx = 1;
+    for (var h = 0; h < adminHeader.length; h++) {
+      var headerKey = cleanStr_(adminHeader[h]).toUpperCase().replace(/[\s_-]+/g, '');
+      if (['NAME', 'ADMINNAME', 'ADMIN', 'USERNAME', 'ชื่อ'].indexOf(headerKey) !== -1) nameIdx = h;
+      if (['PIN', 'PASSWORD', 'PASSCODE', 'รหัสผ่าน'].indexOf(headerKey) !== -1) pinIdx = h;
+    }
+    var pinMatches = false;
+    var suppliedPin = cleanStr_(adminPin);
+    if (suppliedPin && adminValues.length > 1) {
+      for (var a = 1; a < adminValues.length; a++) {
+        if (cleanStr_(adminValues[a][nameIdx]).toLowerCase() === adminKey &&
+            cleanStr_(adminValues[a][pinIdx]) && cleanStr_(adminValues[a][pinIdx]) === suppliedPin) {
+          pinMatches = true;
+          break;
+        }
+      }
+    }
+    if (!pinMatches) {
+      recordLoginFailure_('ADMIN_PASSWORD_VIEW', adminKey);
+      writeLog_('ADMIN', adminName, 'PASSWORD_VIEW_DENIED', 'ยืนยัน Admin เพื่อดูรหัสบัญชีไม่สำเร็จ', ipAddress, deviceInfo);
+      return { success: false, message: 'ยืนยัน Admin ไม่สำเร็จ กรุณาตรวจสอบรหัสผ่าน Admin' };
+    }
+    clearLoginFailures_('ADMIN_PASSWORD_VIEW', adminKey);
+
+    var vjSheet = ss.getSheetByName('vj mc all') || ss.getSheetByName('VJ MC ALL') || ss.getSheetByName('vj_mc_all');
+    if (!vjSheet || vjSheet.getLastRow() < 2 || vjSheet.getLastColumn() < 1) {
+      return { success: false, message: 'ไม่พบข้อมูลบัญชี VJ' };
+    }
+    var lastRow = vjSheet.getLastRow();
+    var headers = vjSheet.getRange(1, 1, 1, vjSheet.getLastColumn()).getDisplayValues()[0] || [];
+    var stageIdx = 1, passwordIdx = -1;
+    for (var c = 0; c < headers.length; c++) {
+      var key = cleanStr_(headers[c]).toUpperCase().replace(/[\s_-]+/g, '');
+      if (key === 'STAGENAME' || key === 'STGENAME' || key === 'ชื่อการแสดง') stageIdx = c;
+      if (['PASSWORD', 'PASSCODE', 'PIN', 'รหัสผ่าน'].indexOf(key) !== -1) passwordIdx = c;
+    }
+    if (passwordIdx < 0) return { success: false, message: 'ไม่พบคอลัมน์รหัสผ่านในชีตบัญชี VJ' };
+
+    var rowCount = lastRow - 1;
+    var stageValues = vjSheet.getRange(2, stageIdx + 1, rowCount, 1).getDisplayValues();
+    var passwordValues = vjSheet.getRange(2, passwordIdx + 1, rowCount, 1).getDisplayValues();
+    for (var r = 0; r < rowCount; r++) {
+      if (cleanStr_(stageValues[r][0]).toLowerCase() !== stageName.toLowerCase()) continue;
+      var password = cleanStr_(passwordValues[r][0]);
+      if (!password) return { success: false, message: 'บัญชีนี้ยังไม่มีรหัสผ่านในชีต' };
+      writeLog_('ADMIN', adminName, 'PASSWORD_VIEW', 'เปิดดูรหัสผ่านบัญชี ' + cleanStr_(stageValues[r][0]), ipAddress, deviceInfo);
+      return { success: true, vjName: cleanStr_(stageValues[r][0]), password: password };
+    }
+    writeLog_('ADMIN', adminName, 'PASSWORD_VIEW_NOT_FOUND', 'ไม่พบบัญชี VJ ที่ขอตรวจสอบ', ipAddress, deviceInfo);
+    return { success: false, message: 'ไม่พบบัญชี VJ ที่เลือก' };
+  } catch (err) {
+    Logger.log('Admin password reveal failed: ' + err.toString());
+    return { success: false, message: 'ตรวจสอบรหัสผ่านไม่สำเร็จ กรุณาลองอีกครั้ง' };
+  }
+}
+
 // ==========================================
 // 📱 USER MAPPING MODULE (ระบบจัดการและกรองข้อมูล User Mapping)
 // ==========================================
@@ -1882,6 +1959,28 @@ function userMappingHistoryRow_(snapshotDate, row) {
   return [snapshotDate, cleanStr_(row[0]), cleanStr_(row[1]), cleanStr_(row[2]), cleanStr_(row[3]), cleanStr_(row[4]), row[5], row[6], row[7], cleanStr_(row[8]), row[9]];
 }
 
+function getUserMappingTodayHistoryRows_(historySheet, snapshotDate) {
+  var rows = [USER_MAPPING_HISTORY_HEADERS];
+  if (!historySheet) return rows;
+  var cursor = historySheet.getLastRow();
+  var chunkSize = 500;
+  // Snapshots are append-only by day; today's entries form the tail of the
+  // archive. Read that tail only instead of scanning every older snapshot.
+  while (cursor >= 2) {
+    var start = Math.max(2, cursor - chunkSize + 1);
+    var chunk = historySheet.getRange(start, 1, cursor - start + 1, 11).getValues();
+    var reachedOlderDate = false;
+    for (var i = chunk.length - 1; i >= 0; i--) {
+      var rowDate = cleanStr_(chunk[i][0]);
+      if (rowDate === snapshotDate) rows.push(chunk[i]);
+      else if (rowDate && rowDate < snapshotDate) { reachedOlderDate = true; break; }
+    }
+    if (reachedOlderDate) break;
+    cursor = start - 1;
+  }
+  return rows;
+}
+
 // Archive every current mapping once per day. Subsequent edits update that day's snapshot,
 // while earlier dates remain immutable and A:J in User_Mapping remain unchanged.
 function archiveUserMappingDailySnapshot_(spreadsheet, liveRows, historyData) {
@@ -1891,8 +1990,8 @@ function archiveUserMappingDailySnapshot_(spreadsheet, liveRows, historyData) {
   if (!lock.tryLock(1000)) return null;
   try {
     var history = getOrCreateUserMappingHistorySheet_(spreadsheet);
-    historyData = historyData || history.getDataRange().getValues();
     var snapshotDate = userMappingSnapshotDate_();
+    historyData = historyData || getUserMappingTodayHistoryRows_(history, snapshotDate);
     var existing = Object.create(null);
     for (var i = 1; i < historyData.length; i++) {
       var id = cleanStr_(historyData[i][1]).toLowerCase();
@@ -2107,55 +2206,130 @@ function getUserMappingAvatarData(avatarIds, userName, userType, sessionToken, i
   }
 }
 
-function getUserMappingData(userName, userType, sessionToken, ipAddress, historyOffset) {
+function buildUserMappingReport_(list, availableTeams) {
+  var uniqueById = Object.create(null);
+  var daily = Object.create(null);
+  list.forEach(function(item, index) {
+    var key = cleanStr_(item.tiktokId).toLowerCase();
+    if (key) uniqueById[key] = item;
+    var dateMatch = cleanStr_(item.updatedDate).match(/^(\d{4}-\d{2}-\d{2})/);
+    if (dateMatch) daily[dateMatch[1]] = (daily[dateMatch[1]] || 0) + 1;
+  });
+  var uniqueUsers = Object.keys(uniqueById).map(function(key) { return uniqueById[key]; });
+  var todayCoins = 0, monthCoins = 0;
+  uniqueUsers.forEach(function(item) { todayCoins += Number(item.coinsToday) || 0; monthCoins += Number(item.coinsMonth) || 0; });
+
+  function aggregate(keyFn) {
+    var groups = Object.create(null);
+    uniqueUsers.forEach(function(item) {
+      var name = cleanStr_(keyFn(item)) || 'ไม่ระบุ';
+      var group = groups[name] || (groups[name] = { name: name, users: 0, coinsToday: 0, coinsMonth: 0, teams: Object.create(null) });
+      group.users++;
+      group.coinsToday += Number(item.coinsToday) || 0;
+      group.coinsMonth += Number(item.coinsMonth) || 0;
+      if (item.team) group.teams[cleanStr_(item.team)] = true;
+    });
+    return Object.keys(groups).map(function(name) {
+      var group = groups[name];
+      group.teams = Object.keys(group.teams);
+      return group;
+    }).sort(function(a, b) { return b.users - a.users || a.name.localeCompare(b.name); });
+  }
+
+  var byVj = aggregate(function(item) { return item.assignedVJ; });
+  var byTeam = aggregate(function(item) { return item.team; });
+  var topUser = uniqueUsers.slice().sort(function(a, b) {
+    return (Number(b.totalDays) || 0) - (Number(a.totalDays) || 0) || (Number(b.coinsMonth) || 0) - (Number(a.coinsMonth) || 0);
+  })[0] || null;
+  if (topUser) topUser = { tiktokId: topUser.tiktokId, userName: topUser.userName, totalDays: topUser.totalDays };
+  return {
+    uniqueUserCount: uniqueUsers.length,
+    todayCoins: todayCoins,
+    monthCoins: monthCoins,
+    topUser: topUser,
+    byVj: byVj,
+    byTeam: byTeam,
+    daily: Object.keys(daily).sort().slice(-24).map(function(date) { return { date: date, count: daily[date] }; }),
+    availableTeams: availableTeams
+  };
+}
+
+function getUserMappingData(userName, userType, sessionToken, ipAddress, historyOffset, options) {
   try {
     var auth = requireSession_(sessionToken, null, ipAddress);
     if (!auth.success) return { success: false, message: auth.message, list: [], historyList: [] };
     userName = auth.session.userName;
     userType = auth.session.userType;
+    options = options && typeof options === 'object' ? options : {};
+    var reportMode = options.reportMode === true;
+    var historyOnly = options.historyOnly === true;
+    var includeHistory = historyOnly || !reportMode || options.includeHistory === true;
     var database = getUserMappingDatabase_();
-    var sheet = getOrCreateUserMappingSheet_(database);
-    var liveLastRow = sheet.getLastRow();
-    // User_Mapping's existing schema is A:J. Avoid pulling unrelated columns
-    // if the sheet has extra formatting or auxiliary fields to the right.
-    var data = liveLastRow > 0 ? sheet.getRange(1, 1, liveLastRow, 10).getValues() : [];
+    var sheet = historyOnly ? database.getSheetByName('User_Mapping') : getOrCreateUserMappingSheet_(database);
+    var liveLastRow = sheet ? sheet.getLastRow() : 0;
+    // User_Mapping A:J is the only live range needed; never read sheet columns beyond J.
+    var data = !historyOnly && liveLastRow > 0 ? sheet.getRange(1, 1, liveLastRow, 10).getValues() : [];
     if (!data || !data.length) data = [[]];
-    var historySheet = getOrCreateUserMappingHistorySheet_(database);
-    var historyLastRow = historySheet.getLastRow();
-    var historyData = historyLastRow > 0 ? historySheet.getRange(1, 1, historyLastRow, 11).getValues() : [];
     var todayStr = userMappingSnapshotDate_();
-    // The daily archive is maintained by writes and the time trigger. Keep a
-    // persistent date marker so readers do not rescan the archive every few hours.
     var archiveProperties = PropertiesService.getScriptProperties();
-    if (data.length > 1 && archiveProperties.getProperty('ACE_USER_MAPPING_ARCHIVED_DATE') !== todayStr) {
-      var archivedData = archiveUserMappingDailySnapshot_(database, data, historyData);
+    var archiveMarker = archiveProperties.getProperty('ACE_USER_MAPPING_ARCHIVED_DATE');
+    var historyData = null;
+
+    // Save today's snapshot once, but don't read the history sheet on every report request.
+    if (data.length > 1 && archiveMarker !== todayStr) {
+      var historyForArchive = null;
+      if (includeHistory && !reportMode) {
+        var archiveHistorySheet = getOrCreateUserMappingHistorySheet_(database);
+        var archiveHistoryRows = archiveHistorySheet.getLastRow();
+        historyForArchive = archiveHistoryRows > 0 ? archiveHistorySheet.getRange(1, 1, archiveHistoryRows, 11).getValues() : [];
+      }
+      var archivedData = archiveUserMappingDailySnapshot_(database, data, historyForArchive);
       if (archivedData) {
-        historyData = archivedData;
+        archiveProperties.setProperty('ACE_USER_MAPPING_ARCHIVED_DATE', todayStr);
+        if (includeHistory && !historyOnly) historyData = archivedData;
+      }
+    } else if (historyOnly && archiveMarker !== todayStr) {
+      var archiveLiveSheet = getOrCreateUserMappingSheet_(database);
+      var archiveLiveLastRow = archiveLiveSheet.getLastRow();
+      var archiveLiveRows = archiveLiveLastRow > 0 ? archiveLiveSheet.getRange(1, 1, archiveLiveLastRow, 10).getValues() : [];
+      if (archiveLiveRows.length > 1 && archiveUserMappingDailySnapshot_(database, archiveLiveRows)) {
         archiveProperties.setProperty('ACE_USER_MAPPING_ARCHIVED_DATE', todayStr);
       }
     }
-    var activeSs = SpreadsheetApp.getActiveSpreadsheet();
-    var vjSheet = activeSs.getSheetByName('vj mc all') || activeSs.getSheetByName('VJ MC ALL') || activeSs.getSheetByName('vj_mc_all');
+
+    var historySheet = null;
+    var historyLastRow = 0;
+    if (includeHistory) {
+      historySheet = getOrCreateUserMappingHistorySheet_(database);
+      historyLastRow = historySheet.getLastRow();
+      // Legacy callers retain the previous response contract. The current UI
+      // asks for historyOnly pages and reads backward in small chunks below.
+      if (!historyOnly && historyLastRow > 0 && historyData === null) historyData = historySheet.getRange(1, 1, historyLastRow, 11).getValues();
+    }
+    if (historyData === null) historyData = [];
+
     var vjProfileMap = Object.create(null);
-    if (vjSheet && vjSheet.getLastRow() > 0 && vjSheet.getLastColumn() > 0) {
-      var vjLastRow = vjSheet.getLastRow();
-      var vjLastColumn = vjSheet.getLastColumn();
-      var hRow = vjSheet.getRange(1, 1, 1, vjLastColumn).getValues()[0] || [];
-      var stageIdx = 1, tiktokIdx = 7;
-      for (var c = 0; c < hRow.length; c++) {
-        var hStr = cleanStr_(hRow[c]).toUpperCase().replace(/[\s_-]+/g, '');
-        if (hStr === 'STGENAME' || hStr === 'STAGENAME' || hStr === 'ชื่อการแสดง') stageIdx = c;
-        if (hStr === 'IDTIKTOK' || hStr === 'TIKTOKID' || hStr === 'TIKTOK') tiktokIdx = c;
-      }
-      if (vjLastRow > 1 && vjLastColumn > 0) {
-        var vjFirstColumn = Math.min(stageIdx, tiktokIdx);
-        var vjColumnCount = Math.min(vjLastColumn - vjFirstColumn, Math.abs(tiktokIdx - stageIdx) + 1);
-        var vjProfileRows = vjColumnCount > 0
-          ? vjSheet.getRange(2, vjFirstColumn + 1, vjLastRow - 1, vjColumnCount).getValues()
-          : [];
-        for (var v = 0; v < vjProfileRows.length; v++) {
-          var stage = cleanStr_(vjProfileRows[v][stageIdx - vjFirstColumn]);
-          if (stage) vjProfileMap[stage.toLowerCase()] = cleanStr_(vjProfileRows[v][tiktokIdx - vjFirstColumn]);
+    if (!historyOnly) {
+      var activeSs = SpreadsheetApp.getActiveSpreadsheet();
+      var vjSheet = activeSs.getSheetByName('vj mc all') || activeSs.getSheetByName('VJ MC ALL') || activeSs.getSheetByName('vj_mc_all');
+      if (vjSheet && vjSheet.getLastRow() > 0 && vjSheet.getLastColumn() > 0) {
+        var vjLastRow = vjSheet.getLastRow();
+        var vjLastColumn = vjSheet.getLastColumn();
+        var hRow = vjSheet.getRange(1, 1, 1, vjLastColumn).getValues()[0] || [];
+        var stageIdx = 1, tiktokIdx = 7;
+        for (var c = 0; c < hRow.length; c++) {
+          var hStr = cleanStr_(hRow[c]).toUpperCase().replace(/[\s_-]+/g, '');
+          if (hStr === 'STGENAME' || hStr === 'STAGENAME' || hStr === 'ชื่อการแสดง') stageIdx = c;
+          if (hStr === 'IDTIKTOK' || hStr === 'TIKTOKID' || hStr === 'TIKTOK') tiktokIdx = c;
+        }
+        if (vjLastRow > 1 && vjLastColumn > 0) {
+          var firstColumn = Math.min(stageIdx, tiktokIdx);
+          var columnCount = Math.min(vjLastColumn - firstColumn, Math.abs(tiktokIdx - stageIdx) + 1);
+          var profileRows = columnCount > 0 ? vjSheet.getRange(2, firstColumn + 1, vjLastRow - 1, columnCount).getValues() : [];
+          for (var v = 0; v < profileRows.length; v++) {
+            var stage = cleanStr_(profileRows[v][stageIdx - firstColumn]);
+            if (stage) vjProfileMap[stage.toLowerCase()] = cleanStr_(profileRows[v][tiktokIdx - firstColumn]);
+          }
         }
       }
     }
@@ -2184,8 +2358,7 @@ function getUserMappingData(userName, userType, sessionToken, ipAddress, history
       }
       var snapshotDate = isHistory ? cleanStr_(row[0]) : updatedDateOnly;
       return {
-        rowIndex: isHistory ? null : index + 1,
-        snapshotDate: snapshotDate,
+        rowIndex: isHistory ? null : index + 1, snapshotDate: snapshotDate,
         tiktokId: tiktokId, userName: uName, tiktokUrl: tiktokUrl,
         assignedVJ: assignedVJ, team: team,
         coinsToday: parseDiamondVal_(row[offset + 5]), coinsMonth: parseDiamondVal_(row[offset + 6]),
@@ -2195,46 +2368,91 @@ function getUserMappingData(userName, userType, sessionToken, ipAddress, history
       };
     }
 
-    var list = [], historyList = [], todayUpdatedCount = 0;
-    for (var i = 1; i < data.length; i++) {
+    var list = [], historyList = [], todayUpdatedCount = 0, availableTeamMap = Object.create(null);
+    var query = cleanStr_(options.query).toLowerCase().slice(0, 100);
+    var teamFilter = cleanStr_(options.team).toLowerCase();
+    var vjFilter = cleanStr_(options.vj).toLowerCase();
+    var dateFrom = /^\d{4}-\d{2}-\d{2}$/.test(cleanStr_(options.dateFrom)) ? cleanStr_(options.dateFrom) : '';
+    var dateTo = /^\d{4}-\d{2}-\d{2}$/.test(cleanStr_(options.dateTo)) ? cleanStr_(options.dateTo) : '';
+    for (var i = 1; !historyOnly && i < data.length; i++) {
       var liveRow = data[i];
-      // Filter VJ rows before avatar/date formatting work. This is especially
-      // important for mobile requests where the sheet may contain many VJs.
       if (cleanType === 'VJ' && cleanStr_(liveRow[3]).toLowerCase() !== cleanUser) continue;
       var item = makeItem(liveRow, i, false);
       if (!item.tiktokId && !item.userName && !item.assignedVJ) continue;
+      if (item.team) availableTeamMap[item.team] = true;
+      var rowDateMatch = cleanStr_(item.updatedDate).match(/^(\d{4}-\d{2}-\d{2})/);
+      var rowDate = rowDateMatch ? rowDateMatch[1] : '';
+      if (query && [item.tiktokId,item.userName,item.assignedVJ,item.team].join(' ').toLowerCase().indexOf(query) === -1) continue;
+      if (teamFilter && item.team.toLowerCase() !== teamFilter) continue;
+      if (vjFilter && item.assignedVJ.toLowerCase() !== vjFilter) continue;
+      if (dateFrom && (!rowDate || rowDate < dateFrom)) continue;
+      if (dateTo && (!rowDate || rowDate > dateTo)) continue;
       list.push(item);
       if (item.isUpdatedToday) todayUpdatedCount++;
     }
-    var matchingHistoryRows = [];
-    for (var h = 1; h < historyData.length; h++) {
-      var historyRow = historyData[h];
-      if (!cleanStr_(historyRow[1]) && !cleanStr_(historyRow[2]) && !cleanStr_(historyRow[4])) continue;
-      if (cleanType === 'VJ' && cleanStr_(historyRow[4]).toLowerCase() !== cleanUser) continue;
-      matchingHistoryRows.push({ row: historyRow, index: h });
-    }
+
     var safeHistoryOffset = Math.max(0, Math.floor(Number(historyOffset) || 0));
     var historyPageSize = 100;
-    // Snapshot rows are appended by date. Read the newest page from the end of
-    // the sheet instead of sorting the full archive on every mobile request.
-    var historyEnd = Math.max(0, matchingHistoryRows.length - safeHistoryOffset);
-    var historyStart = Math.max(0, historyEnd - historyPageSize);
-    var historyPage = matchingHistoryRows.slice(historyStart, historyEnd).reverse();
-    historyPage.forEach(function(entry) {
-      historyList.push(makeItem(entry.row, entry.index, true));
-    });
+    var historyHasMore = false;
+    var historyTotalCount = 0;
+    if (historyOnly) {
+      var skippedHistory = 0;
+      var historyRowCursor = historyLastRow;
+      var historyChunkSize = 500;
+      while (historyRowCursor >= 2 && historyList.length <= historyPageSize && !historyHasMore) {
+        var chunkStart = Math.max(2, historyRowCursor - historyChunkSize + 1);
+        var historyChunk = historySheet.getRange(chunkStart, 1, historyRowCursor - chunkStart + 1, 11).getValues();
+        for (var hc = historyChunk.length - 1; hc >= 0 && historyList.length <= historyPageSize && !historyHasMore; hc--) {
+          var historyRow = historyChunk[hc];
+          if (!cleanStr_(historyRow[1]) && !cleanStr_(historyRow[2]) && !cleanStr_(historyRow[4])) continue;
+          if (cleanType === 'VJ' && cleanStr_(historyRow[4]).toLowerCase() !== cleanUser) continue;
+          if (skippedHistory < safeHistoryOffset) { skippedHistory++; continue; }
+          if (historyList.length === historyPageSize) { historyHasMore = true; break; }
+          var actualRowIndex = chunkStart + hc;
+          historyList.push(makeItem(historyRow, actualRowIndex - 1, true));
+        }
+        historyRowCursor = chunkStart - 1;
+      }
+      historyTotalCount = null; // Avoid scanning the whole archive solely to count old pages.
+    } else {
+      var matchingHistoryRows = [];
+      for (var h = 1; h < historyData.length; h++) {
+        var legacyHistoryRow = historyData[h];
+        if (!cleanStr_(legacyHistoryRow[1]) && !cleanStr_(legacyHistoryRow[2]) && !cleanStr_(legacyHistoryRow[4])) continue;
+        if (cleanType === 'VJ' && cleanStr_(legacyHistoryRow[4]).toLowerCase() !== cleanUser) continue;
+        matchingHistoryRows.push({ row: legacyHistoryRow, index: h });
+      }
+      var historyEnd = Math.max(0, matchingHistoryRows.length - safeHistoryOffset);
+      var historyStart = Math.max(0, historyEnd - historyPageSize);
+      matchingHistoryRows.slice(historyStart, historyEnd).reverse().forEach(function(entry) {
+        historyList.push(makeItem(entry.row, entry.index, true));
+      });
+      historyHasMore = historyStart > 0;
+      historyTotalCount = matchingHistoryRows.length;
+    }
+
+    if (reportMode) {
+      var availableTeams = Object.keys(availableTeamMap).sort(function(a,b) { return a.localeCompare(b); });
+      var report = buildUserMappingReport_(list, availableTeams);
+      var pageSize = options.exportAll === true ? 10000 : Math.max(1, Math.min(500, Math.floor(Number(options.pageSize) || 50)));
+      var page = options.exportAll === true ? 1 : Math.max(1, Math.floor(Number(options.page) || 1));
+      var totalPages = Math.ceil(list.length / pageSize);
+      if (totalPages && page > totalPages) page = totalPages;
+      var start = (page - 1) * pageSize;
+      return {
+        success: true, userType: cleanType, list: list.slice(start, start + pageSize),
+        page: page, pageSize: pageSize, totalPages: totalPages, totalCount: list.length,
+        todayUpdatedCount: todayUpdatedCount, todayStr: todayStr, report: report,
+        availableTeams: availableTeams, historyList: [], historyNextOffset: 0,
+        historyHasMore: false, historyTotalCount: 0
+      };
+    }
+
     return {
-      success: true,
-      userType: cleanType,
-      list: list,
-      historyList: historyList,
-      historyOffset: safeHistoryOffset,
-      historyNextOffset: safeHistoryOffset + historyList.length,
-      historyHasMore: historyStart > 0,
-      historyTotalCount: matchingHistoryRows.length,
-      totalCount: list.length,
-      todayUpdatedCount: todayUpdatedCount,
-      todayStr: todayStr
+      success: true, userType: cleanType, list: list, historyList: historyList,
+      historyOffset: safeHistoryOffset, historyNextOffset: safeHistoryOffset + historyList.length,
+      historyHasMore: historyHasMore, historyTotalCount: historyTotalCount,
+      totalCount: list.length, todayUpdatedCount: todayUpdatedCount, todayStr: todayStr
     };
   } catch (err) {
     return { success: false, message: 'เกิดข้อผิดพลาดในระบบ User Mapping: ' + err.toString(), list: [], historyList: [] };

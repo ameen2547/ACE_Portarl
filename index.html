@@ -1196,9 +1196,32 @@
     <section id="admViewPassword"
       class="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-6 space-y-4 hidden">
       <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-        <h3 class="font-bold text-slate-800 text-base">🛡️ ความปลอดภัยข้อมูลบัญชี</h3>
+        <div>
+          <h3 class="font-bold text-slate-800 text-base">🛡️ ตรวจสอบรหัสผ่านบัญชี</h3>
+          <p class="mt-1 text-xs text-slate-500">ต้องยืนยันรหัสผ่าน Admin อีกครั้งก่อนเปิดดู และระบบจะบันทึกประวัติการเข้าถึง</p>
+        </div>
       </div>
-      <div id="admPasswordGrid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
+      <div class="grid grid-cols-1 gap-4 rounded-2xl border border-indigo-100 bg-indigo-50/50 p-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
+        <div>
+          <label for="admPasswordVjSelect" class="mb-1.5 block text-xs font-bold text-slate-700">บัญชี VJ/MC</label>
+          <select id="admPasswordVjSelect" onchange="clearAdminPasswordReveal()" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm outline-none">
+            <option value="">กำลังโหลดรายชื่อบัญชี...</option>
+          </select>
+        </div>
+        <div>
+          <label for="admPasswordAdminPin" class="mb-1.5 block text-xs font-bold text-slate-700">ยืนยันรหัสผ่าน Admin</label>
+          <input id="admPasswordAdminPin" type="password" autocomplete="current-password" oninput="clearAdminPasswordReveal(false)" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmAndShowVjPassword();}" placeholder="กรอกรหัสผ่าน Admin อีกครั้ง" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm outline-none">
+        </div>
+        <button id="admPasswordRevealButton" type="button" onclick="confirmAndShowVjPassword()" class="rounded-xl bg-indigo-600 px-5 py-3 text-sm font-bold text-white shadow-sm hover:bg-indigo-700">ยืนยันและดูรหัสผ่าน</button>
+      </div>
+      <p id="admPasswordStatus" role="status" aria-live="polite" class="text-xs text-slate-500">รหัสผ่านจะแสดงเฉพาะบัญชีที่เลือก และซ่อนอัตโนมัติภายใน 30 วินาที</p>
+      <div id="admPasswordRevealPanel" class="hidden rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div class="min-w-0"><p class="text-[11px] font-semibold text-emerald-700">บัญชีที่ตรวจสอบแล้ว</p><p id="admPasswordRevealTitle" class="mt-1 truncate font-bold text-slate-800"></p></div>
+          <div class="flex items-center gap-2"><code id="admPasswordRevealValue" class="select-all rounded-lg border border-emerald-200 bg-white px-4 py-2 font-mono text-lg font-bold tracking-wider text-slate-900"></code><button type="button" onclick="clearAdminPasswordReveal()" class="min-h-[44px] rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600">ซ่อน</button></div>
+        </div>
+      </div>
+      <div id="admPasswordGrid" class="grid grid-cols-1 gap-4"></div>
     </section>
 
     <!-- Admin View 8: Attendance System -->
@@ -2990,11 +3013,92 @@
 
     function renderAdminPasswordGrid(vjList) {
       var grid = document.getElementById('admPasswordGrid');
-      grid.innerHTML = '';
+      if (!grid) return;
+      grid.replaceChildren();
+      var select = document.getElementById('admPasswordVjSelect');
+      var selected = select ? select.value : '';
+      if (select) {
+        select.replaceChildren();
+        var placeholder = document.createElement('option');
+        placeholder.value = ''; placeholder.textContent = '— เลือกบัญชี VJ/MC —';
+        select.appendChild(placeholder);
+        (vjList || []).forEach(function(item) {
+          var option = document.createElement('option');
+          option.value = item.vjName || '';
+          option.textContent = (item.vjName || 'ไม่ระบุชื่อ') + (item.team ? ' · ' + item.team : '');
+          select.appendChild(option);
+        });
+        if (selected && Array.prototype.some.call(select.options, function(option) { return option.value === selected; })) select.value = selected;
+        if (window.aceSearchWidgets && window.aceSearchWidgets.admPasswordVjSelect) window.aceSearchWidgets.admPasswordVjSelect();
+      }
       var notice = document.createElement('div');
-      notice.className = 'col-span-full rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-relaxed text-amber-900';
-      notice.textContent = 'ระบบจะไม่แสดง PIN หรือรหัสผ่านของผู้ใช้ในหน้าเว็บ เพื่อป้องกันการเปิดเผยข้อมูลรับรอง หากต้องการรีเซ็ตรหัสผ่าน โปรดดำเนินการในแหล่งข้อมูลที่ผู้ดูแลได้รับสิทธิ์';
+      notice.className = 'rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900';
+      notice.textContent = 'ระบบไม่โหลดรหัสผ่านล่วงหน้า การดูแต่ละครั้งต้องยืนยัน PIN ของ Admin ที่เข้าสู่ระบบอยู่ และซ่อนรหัสอัตโนมัติหลัง 30 วินาที';
       grid.appendChild(notice);
+    }
+
+    var adminPasswordRevealTimer = null;
+    var adminPasswordRevealRequestId = 0;
+    function clearAdminPasswordReveal(clearPin) {
+      adminPasswordRevealRequestId++;
+      if (adminPasswordRevealTimer) window.clearTimeout(adminPasswordRevealTimer);
+      adminPasswordRevealTimer = null;
+      var panel = document.getElementById('admPasswordRevealPanel');
+      var title = document.getElementById('admPasswordRevealTitle');
+      var value = document.getElementById('admPasswordRevealValue');
+      var pin = document.getElementById('admPasswordAdminPin');
+      var button = document.getElementById('admPasswordRevealButton');
+      if (panel) panel.classList.add('hidden');
+      if (title) title.textContent = '';
+      if (value) value.textContent = '';
+      if (button) button.disabled = false;
+      if (clearPin !== false && pin) pin.value = '';
+    }
+
+    function confirmAndShowVjPassword() {
+      var select = document.getElementById('admPasswordVjSelect');
+      var pinInput = document.getElementById('admPasswordAdminPin');
+      var status = document.getElementById('admPasswordStatus');
+      var button = document.getElementById('admPasswordRevealButton');
+      var stageName = select ? select.value : '';
+      var adminPin = pinInput ? pinInput.value : '';
+      clearAdminPasswordReveal(false);
+      if (!stageName || !adminPin) {
+        if (status) status.textContent = 'เลือกบัญชีและกรอกรหัสผ่าน Admin เพื่อยืนยันก่อน';
+        return;
+      }
+      if (!currentAdminToken || !hasAppsScriptBridge()) {
+        if (status) status.textContent = 'เซสชัน Admin หมดอายุหรือเชื่อมต่อระบบไม่ได้ กรุณาเข้าสู่ระบบใหม่';
+        return;
+      }
+      if (button) button.disabled = true;
+      if (status) status.textContent = 'กำลังยืนยันสิทธิ์ Admin...';
+      var requestId = adminPasswordRevealRequestId;
+      google.script.run.withSuccessHandler(function(result) {
+        if (requestId !== adminPasswordRevealRequestId || (select && select.value !== stageName)) return;
+        if (button) button.disabled = false;
+        if (pinInput) pinInput.value = '';
+        if (!result || !result.success) {
+          if (status) status.textContent = (result && result.message) || 'ยืนยันไม่สำเร็จ';
+          return;
+        }
+        var panel = document.getElementById('admPasswordRevealPanel');
+        var title = document.getElementById('admPasswordRevealTitle');
+        var value = document.getElementById('admPasswordRevealValue');
+        if (title) title.textContent = result.vjName || stageName;
+        if (value) value.textContent = result.password || '';
+        if (panel) panel.classList.remove('hidden');
+        if (status) status.textContent = 'ยืนยันสำเร็จ · รหัสผ่านจะถูกซ่อนอัตโนมัติภายใน 30 วินาที';
+        adminPasswordRevealTimer = window.setTimeout(function() {
+          clearAdminPasswordReveal();
+          if (status) status.textContent = 'ซ่อนรหัสผ่านแล้ว เลือกบัญชีและยืนยัน Admin ใหม่หากต้องการดูอีกครั้ง';
+        }, 30000);
+      }).withFailureHandler(function(error) {
+        if (requestId !== adminPasswordRevealRequestId || (select && select.value !== stageName)) return;
+        if (button) button.disabled = false;
+        if (pinInput) pinInput.value = '';
+        if (status) status.textContent = 'ตรวจสอบไม่สำเร็จ: ' + ((error && error.message) || 'กรุณาลองอีกครั้ง');
+      }).getVjPasswordForAdmin(stageName, adminPin, currentAdminToken, clientIpAddress, clientDeviceInfo);
     }
 
     function filterAdminPasswordGrid() {
@@ -3209,6 +3313,7 @@
     }
 
     function switchAdminTab(tab) {
+      if (tab !== 'password') clearAdminPasswordReveal();
       var views = ['Overall', 'Team', 'Individual', 'KpiCompare', 'Version', 'AccessControl', 'Password', 'Attendance', 'Summary', 'AnnCreate', 'AnnStats', 'Logs', 'UserMap'];
       views.forEach(function(v) {
         var el = document.getElementById('admView' + v);
@@ -3233,6 +3338,7 @@
     }
 
     function logoutAdmin() {
+      clearAdminPasswordReveal();
       currentAdminUser = "";
       cachedAdminData = null;
       hideKPITopHeaderBar();
@@ -3715,17 +3821,21 @@ var cachedUserMapHistoryHasMore = false;
 var userMapHistoryPageLoading = false;
 var userMapCurrentPage = { VJ: 1, ADMIN: 1 };
 var userMapCurrentTotal = { VJ: 0, ADMIN: 0 };
+var userMapReportState = {
+  VJ: { requestId: 0, searchTimer: null, summary: null, availableTeams: [], historyLoaded: false },
+  ADMIN: { requestId: 0, searchTimer: null, summary: null, availableTeams: [], historyLoaded: false }
+};
 var USER_MAPPING_PAGE_SIZE = 50;
 var cachedMappingAvatarUrls = Object.create(null);
 var cachedMappingAvatarLookups = Object.create(null);
 var pendingMappingAvatarLookups = Object.create(null);
-var userMapVjDetailState = { userType:'ADMIN', vjName:'', tab:'users', page:1, totalPages:0, result:null, filterKey:'', requestId:0, searchTimer:null, userRows:[] };
+var userMapVjDetailState = { userType:'ADMIN', vjName:'', tab:'users', page:1, totalPages:0, totalUsers:0, result:null, filterKey:'', requestId:0, searchTimer:null, userRows:[] };
 var giftDetailsReportState = {
   VJ: { page: 1, totalPages: 0, loading: false, requestId: 0, searchTimer: null, loaded: false },
   ADMIN: { page: 1, totalPages: 0, loading: false, requestId: 0, searchTimer: null, loaded: false }
 };
 
-function requestUserMappingData(userName, userType, sessionToken, onSuccess, historyOffset, onFailure) {
+function requestUserMappingData(userName, userType, sessionToken, onSuccess, historyOffset, onFailure, options) {
   var attempt = 0;
   function request() {
     google.script.run
@@ -3753,7 +3863,7 @@ function requestUserMappingData(userName, userType, sessionToken, onSuccess, his
         console.error('โหลด User Mapping ไม่สำเร็จ:', err);
         showCustomAlert('โหลด User Mapping ไม่สำเร็จ: ' + message + '\nกรุณาตรวจสัญญาณอินเทอร์เน็ต แล้วลองเปิดเมนูนี้อีกครั้ง', 'เกิดข้อผิดพลาด');
       })
-      .getUserMappingData(userName, userType, sessionToken, clientIpAddress, historyOffset || 0);
+      .getUserMappingData(userName, userType, sessionToken, clientIpAddress, historyOffset || 0, options || {});
   }
   request();
 }
@@ -3861,6 +3971,7 @@ function switchUserMapPanel(userType, panel) {
   if (vjTeamsTab) { vjTeamsTab.classList.toggle('active', vjTeams); vjTeamsTab.setAttribute('aria-selected', String(vjTeams)); }
   if (historyTab) { historyTab.classList.toggle('active', history); historyTab.setAttribute('aria-selected', String(history)); }
   if (giftsTab) { giftsTab.classList.toggle('active', gifts); giftsTab.setAttribute('aria-selected', String(gifts)); }
+  if (history && !userMapReportState[userType].historyLoaded) loadUserMapHistory(userType, 0);
   if (gifts && !giftDetailsReportState[userType].loaded) loadGiftDetailsReport(userType, 1);
 }
 
@@ -3869,7 +3980,8 @@ function populateGiftTeamFilter(userType) {
   var select = document.getElementById(prefix + 'GiftTeamFilter');
   if (!select) return;
   var selected = select.value;
-  var teams = Array.from(new Set((cachedUserMapData || []).map(function(item) { return mappingText(item.team).trim(); }).filter(Boolean))).sort(function(a, b) { return a.localeCompare(b); });
+  var reportTeams = userMapReportState[userType] && userMapReportState[userType].availableTeams || [];
+  var teams = reportTeams.length ? reportTeams.slice() : Array.from(new Set((cachedUserMapData || []).map(function(item) { return mappingText(item.team).trim(); }).filter(Boolean))).sort(function(a, b) { return a.localeCompare(b); });
   select.innerHTML = '<option value="">ทุกทีม</option>';
   teams.forEach(function(team) {
     var option = document.createElement('option');
@@ -3974,6 +4086,18 @@ function giftReportIdentityKey(value) {
     .replace(/^@/, '').replace(/\/$/, '');
 }
 
+function cachedUserMapVjProfile(stageName, userType) {
+  var key = mappingText(stageName).trim().toLowerCase();
+  if (!key) return null;
+  if (userType === 'ADMIN' && cachedAdminData && Array.isArray(cachedAdminData.vjList)) {
+    return cachedAdminData.vjList.find(function(item) { return mappingText(item.vjName).trim().toLowerCase() === key; }) || null;
+  }
+  if (cachedVJData && cachedVJData.personalData && mappingText(cachedVJData.personalData.stageName).trim().toLowerCase() === key) {
+    return { vjName: cachedVJData.personalData.stageName, profilePic: cachedVJData.personalData.profilePic };
+  }
+  return null;
+}
+
 function giftReportProfileCell(row, id, label, fallbackSource) {
   var cell = document.createElement('td');
   cell.className = 'p-3';
@@ -4073,18 +4197,8 @@ function renderGiftDetailsReport(userType, result) {
   if (tbody) {
     tbody.replaceChildren();
     var list = Array.isArray(result.list) ? result.list : [];
-    var mappingById = Object.create(null);
-    var mappingByVj = Object.create(null);
-    (cachedUserMapData || []).forEach(function(mapping) {
-      var idKey = giftReportIdentityKey(mapping.tiktokId);
-      var vjKey = mappingText(mapping.assignedVJ).trim().toLowerCase();
-      if (idKey) mappingById[idKey] = mapping;
-      if (vjKey && !mappingByVj[vjKey]) mappingByVj[vjKey] = mapping;
-    });
     var giftAvatarRows = list.map(function(item) {
-      var mapping = mappingById[giftReportIdentityKey(item.tiktokId)];
-      var vjProfile = mappingByVj[mappingText(item.vj).trim().toLowerCase()];
-      return { tiktokId: item.isMapped ? item.tiktokId : '', vjTikTokId: vjProfile && vjProfile.vjTikTokId };
+      return { tiktokId: item.isMapped ? item.tiktokId : '' };
     });
     loadMappingAvatarCache(giftAvatarRows);
     if (!list.length) {
@@ -4097,15 +4211,15 @@ function renderGiftDetailsReport(userType, result) {
         var row = document.createElement('tr');
         row.className = 'hover:bg-amber-50/50';
         giftReportCell(row, item.eventTime, 'whitespace-nowrap p-3 text-slate-600');
-        var mappedProfile = mappingById[giftReportIdentityKey(item.tiktokId)];
-        var vjProfile = mappingByVj[mappingText(item.vj).trim().toLowerCase()];
-        giftReportProfileCell(row, vjProfile && vjProfile.vjTikTokId, item.vj || (vjProfile && vjProfile.assignedVJ), vjProfile && vjProfile.vjAvatar);
-        giftReportProfileCell(row, item.tiktokId, item.gifterName, mappedProfile && mappedProfile.userAvatar);
+        var vjName = item.vj || item.mappedVJ || '';
+        var vjProfile = cachedUserMapVjProfile(vjName, userType);
+        giftReportProfileCell(row, '', vjName, vjProfile && vjProfile.profilePic);
+        giftReportProfileCell(row, item.isMapped ? item.tiktokId : '', item.gifterName, '');
         giftReportCell(row, item.tiktokId, 'p-3 font-mono text-[11px] text-slate-600');
         giftReportGiftCell(row, item);
         giftReportCell(row, (Number(item.quantity) || 0).toLocaleString(), 'p-3 text-right text-slate-600');
         giftReportCell(row, (Number(item.totalCoins) || 0).toLocaleString(), 'p-3 text-right font-bold text-indigo-700');
-        if (item.isMapped) giftReportProfileCell(row, item.tiktokId, item.mappedUserName || item.tiktokId, mappedProfile && mappedProfile.userAvatar);
+        if (item.isMapped) giftReportProfileCell(row, item.tiktokId, item.mappedUserName || item.tiktokId, '');
         else giftReportCell(row, 'ไม่พบใน User Mapping', 'p-3 text-slate-400');
         giftReportCell(row, item.team || 'ไม่ระบุทีม', 'p-3 text-slate-500');
         if (!item.isMapped) row.classList.add('bg-slate-50/70');
@@ -4133,35 +4247,22 @@ function openUserMapVjDetail(userType, vjName) {
   state.tab = 'users';
   state.page = 1;
   state.totalPages = 0;
+  state.totalUsers = 0;
   state.result = null;
   state.filterKey = '';
-  state.userRows = cachedUserMapData.filter(function(item) { return mappingText(item.assignedVJ).trim().toLowerCase() === vjName.toLowerCase(); });
-
-  var users = state.userRows;
-  var totalToday = users.reduce(function(sum,item) { return sum + (Number(item.coinsToday)||0); },0);
-  var totalMonth = users.reduce(function(sum,item) { return sum + (Number(item.coinsMonth)||0); },0);
-  var teams = Array.from(new Set(users.map(function(item) { return mappingText(item.team).trim(); }).filter(Boolean)));
-  var vjId = users[0] && users[0].vjTikTokId || '';
+  state.userRows = [];
+  var vjId = '';
   var title = document.getElementById('userMapVjDetailTitle'); if (title) title.textContent = 'ผู้ที่ส่งให้ VJ: ' + vjName;
   var meta = document.getElementById('userMapVjDetailMeta');
-  if (meta) meta.textContent = (teams.length ? 'ทีม ' + teams.join(', ') : 'ไม่ระบุทีม') + (vjId ? ' · TikTok ID @' + vjId.replace(/^@/,'') : '') + ' · ' + users.length.toLocaleString() + ' Users · วันนี้ ' + totalToday.toLocaleString() + ' · สะสม ' + totalMonth.toLocaleString();
+  if (meta) meta.textContent = 'กำลังโหลดข้อมูลของ VJ นี้...';
   var avatar = document.getElementById('userMapVjDetailAvatar');
-  if (avatar) {
-    avatar.replaceChildren();
-    if (vjId) avatar.appendChild(createMappingAvatar(vjId, cachedMappingAvatarSource(vjId, ''), vjName, 'h-full w-full rounded-full object-cover'));
-    else avatar.textContent = '👤';
-  }
+  if (avatar) { avatar.replaceChildren(); avatar.textContent = '👤'; }
   var profile = document.getElementById('userMapVjDetailProfile');
-  if (profile && /^@?[a-zA-Z0-9._]{1,50}$/.test(vjId)) {
-    profile.href = 'https://www.tiktok.com/@' + encodeURIComponent(vjId.replace(/^@/,''));
-    profile.classList.remove('hidden');
-  } else if (profile) profile.classList.add('hidden');
+  if (profile) profile.classList.add('hidden');
   var search = document.getElementById('userMapVjDetailSearch'); if (search) search.value = '';
   document.getElementById('userMapVjDetailModal').classList.remove('hidden');
   document.body.style.overflow = 'hidden';
   switchUserMapVjDetailTab('users');
-  renderUserMapVjDetailUsers();
-  if (vjId) loadMappingAvatarCache([{ vjTikTokId:vjId }]);
 }
 
 function closeUserMapVjDetail() {
@@ -4182,28 +4283,93 @@ function switchUserMapVjDetailTab(tab) {
   });
   var footer = document.getElementById('userMapVjDetailFooter');
   if (footer) footer.classList.toggle('hidden', tab !== 'gifts');
+  var usersFooter = document.getElementById('userMapVjDetailUsersFooter');
+  if (usersFooter) usersFooter.classList.toggle('hidden', tab !== 'users');
   var search = document.getElementById('userMapVjDetailSearch');
   if (search) search.placeholder = tab === 'users' ? 'ค้นหาชื่อหรือ TikTok ID...' : 'ค้นหาผู้ส่งหรือ TikTok ID...';
-  if (tab === 'users') renderUserMapVjDetailUsers();
+  if (tab === 'users') {
+    if (!state.userRows.length && !state.totalUsers) loadUserMapVjDetailUsers(state.page || 1);
+    else renderUserMapVjDetailUsers();
+  }
   else if (tab === 'gifters' || tab === 'gifts') loadUserMapVjDetailGiftData(false);
 }
 
 function renderUserMapVjDetailUsers() {
   var tbody = document.getElementById('userMapVjDetailUsersBody'); if (!tbody) return;
-  var search = mappingText(document.getElementById('userMapVjDetailSearch') && document.getElementById('userMapVjDetailSearch').value).trim().toLowerCase();
-  var rows = userMapVjDetailState.userRows.filter(function(item) { return !search || [item.tiktokId,item.userName,item.team].join(' ').toLowerCase().indexOf(search) !== -1; });
-  rows.sort(function(a,b) { return (Number(b.coinsMonth)||0) - (Number(a.coinsMonth)||0); });
+  var rows = userMapVjDetailState.userRows || [];
   tbody.replaceChildren();
   if (!rows.length) {
-    var empty=document.createElement('tr'); var cell=document.createElement('td'); cell.colSpan=6; cell.className='py-8 text-center text-slate-400'; cell.textContent='ไม่พบ User ใน VJ นี้'; empty.appendChild(cell); tbody.appendChild(empty); return;
+    var empty=document.createElement('tr'); var cell=document.createElement('td'); cell.colSpan=6; cell.className='py-8 text-center text-slate-400'; cell.textContent='ไม่พบ User ใน VJ นี้'; empty.appendChild(cell); tbody.appendChild(empty);
+    updateUserMapVjDetailUsersPager(); return;
   }
   rows.forEach(function(item,index) {
     var row=document.createElement('tr');
-    [String(index+1),item.tiktokId,item.userName,item.team || 'ไม่ระบุทีม',(Number(item.coinsToday)||0).toLocaleString(),(Number(item.coinsMonth)||0).toLocaleString()].forEach(function(value) {
+    [String((userMapVjDetailState.page - 1) * USER_MAPPING_PAGE_SIZE + index + 1),item.tiktokId,item.userName,item.team || 'ไม่ระบุทีม',(Number(item.coinsToday)||0).toLocaleString(),(Number(item.coinsMonth)||0).toLocaleString()].forEach(function(value) {
       var cell=document.createElement('td'); cell.textContent=value || '-'; row.appendChild(cell);
     });
     tbody.appendChild(row);
   });
+  updateUserMapVjDetailUsersPager();
+}
+
+function updateUserMapVjDetailUsersPager() {
+  var state = userMapVjDetailState;
+  var text = document.getElementById('userMapVjDetailUsersPageText');
+  var previous = document.getElementById('userMapVjDetailUsersPrev');
+  var next = document.getElementById('userMapVjDetailUsersNext');
+  if (text) text.textContent = state.totalUsers ? 'หน้า ' + state.page + ' / ' + state.totalPages + ' · รวม ' + state.totalUsers.toLocaleString() + ' Users' : 'ไม่มีข้อมูล';
+  if (previous) previous.disabled = state.page <= 1;
+  if (next) next.disabled = !state.totalPages || state.page >= state.totalPages;
+}
+
+function loadUserMapVjDetailUsers(page) {
+  var state = userMapVjDetailState;
+  var token = state.userType === 'ADMIN' ? currentAdminToken : currentSessionToken;
+  var userName = state.userType === 'ADMIN' ? currentAdminUser : currentSessionVJ;
+  if (!token || !userName || !hasAppsScriptBridge()) return;
+  state.page = Math.max(1, Number(page) || 1);
+  var search = document.getElementById('userMapVjDetailSearch');
+  var prefix = state.userType === 'ADMIN' ? 'adm' : 'vj';
+  var from = document.getElementById(prefix + 'UserMapDateFrom');
+  var to = document.getElementById(prefix + 'UserMapDateTo');
+  var requestId = ++state.requestId;
+  var tbody = document.getElementById('userMapVjDetailUsersBody');
+  if (tbody) { tbody.replaceChildren(); var row=document.createElement('tr'); var cell=document.createElement('td'); cell.colSpan=6; cell.className='py-8 text-center text-slate-400'; cell.textContent='กำลังโหลดข้อมูล User Mapping ของ VJ นี้...'; row.appendChild(cell); tbody.appendChild(row); }
+  google.script.run.withSuccessHandler(function(res) {
+    if (requestId !== state.requestId || !res || !res.success) return;
+    state.userRows = res.list || [];
+    state.page = Number(res.page) || 1;
+    state.totalPages = Number(res.totalPages) || 0;
+    state.totalUsers = Number(res.totalCount) || 0;
+    var summary = res.report || {};
+    var teams = (summary.byTeam || []).map(function(item) { return item.name; }).filter(Boolean);
+    var first = state.userRows[0] || {};
+    var vjId = first.vjTikTokId || '';
+    var totalToday = Number(summary.todayCoins) || 0;
+    var totalMonth = Number(summary.monthCoins) || 0;
+    var meta = document.getElementById('userMapVjDetailMeta');
+    if (meta) meta.textContent = (teams.length ? 'ทีม ' + teams.join(', ') : 'ไม่ระบุทีม') + (vjId ? ' · TikTok ID @' + vjId.replace(/^@/,'') : '') + ' · ' + state.totalUsers.toLocaleString() + ' Users · วันนี้ ' + totalToday.toLocaleString() + ' · สะสม ' + totalMonth.toLocaleString();
+    var avatar = document.getElementById('userMapVjDetailAvatar');
+    if (avatar) { avatar.replaceChildren(); if (vjId) avatar.appendChild(createMappingAvatar(vjId, cachedMappingAvatarSource(vjId, ''), state.vjName, 'h-full w-full rounded-full object-cover')); else avatar.textContent = '👤'; }
+    var profile = document.getElementById('userMapVjDetailProfile');
+    if (profile && /^@?[a-zA-Z0-9._]{1,50}$/.test(vjId)) { profile.href = 'https://www.tiktok.com/@' + encodeURIComponent(vjId.replace(/^@/,'')); profile.classList.remove('hidden'); } else if (profile) profile.classList.add('hidden');
+    if (vjId) loadMappingAvatarCache([{ vjTikTokId:vjId }]);
+    renderUserMapVjDetailUsers();
+  }).withFailureHandler(function(error) {
+    if (requestId !== state.requestId) return;
+    if (tbody) { tbody.replaceChildren(); var row=document.createElement('tr'); var cell=document.createElement('td'); cell.colSpan=6; cell.className='py-8 text-center text-rose-500'; cell.textContent='โหลด User Mapping ไม่สำเร็จ: ' + ((error && error.message) || 'กรุณาลองอีกครั้ง'); row.appendChild(cell); tbody.appendChild(row); }
+  }).getUserMappingData(userName, state.userType, token, clientIpAddress, 0, {
+    reportMode: true, page: state.page, pageSize: USER_MAPPING_PAGE_SIZE,
+    vj: state.vjName, query: search && search.value || '',
+    dateFrom: from && from.value || '', dateTo: to && to.value || ''
+  });
+}
+
+function changeUserMapVjDetailUserPage(delta) {
+  var state = userMapVjDetailState;
+  var next = state.page + Number(delta || 0);
+  if (next < 1 || next > state.totalPages) return;
+  loadUserMapVjDetailUsers(next);
 }
 
 function userMapVjDetailFilterKey() {
@@ -4286,7 +4452,11 @@ function changeUserMapVjDetailPage(delta) {
 
 function filterUserMapVjDetail() {
   var state=userMapVjDetailState;
-  if(state.tab==='users') { renderUserMapVjDetailUsers(); return; }
+  if(state.tab==='users') {
+    if(state.searchTimer) window.clearTimeout(state.searchTimer);
+    state.searchTimer=window.setTimeout(function() { loadUserMapVjDetailUsers(1); },250);
+    return;
+  }
   if(state.tab==='gifters' && state.result && state.filterKey.split('|').slice(0,4).join('|')===userMapVjDetailFilterKey().split('|').slice(0,4).join('|')) { renderUserMapVjDetailGifters(state.result); return; }
   if(state.searchTimer) window.clearTimeout(state.searchTimer);
   state.searchTimer=window.setTimeout(function() { state.page=1; state.result=null; loadUserMapVjDetailGiftData(true); },250);
@@ -4296,7 +4466,10 @@ function populateUserMapTeamFilter(userType) {
   var select = document.getElementById(userType === 'ADMIN' ? 'admUserMapTeamFilter' : 'vjUserMapTeamFilter');
   if (!select) return;
   var selected = select.value;
-  var teams = Array.from(new Set(cachedUserMapData.map(function(item) { return mappingText(item.team).trim(); }).filter(Boolean))).sort(function(a,b) { return a.localeCompare(b); });
+  var state = userMapReportState[userType];
+  var teams = state && state.summary
+    ? (state.availableTeams || []).slice()
+    : Array.from(new Set(cachedUserMapData.map(function(item) { return mappingText(item.team).trim(); }).filter(Boolean))).sort(function(a,b) { return a.localeCompare(b); });
   select.innerHTML = '<option value="">ทุกทีม</option>';
   teams.forEach(function(team) {
     var option = document.createElement('option');
@@ -4307,15 +4480,20 @@ function populateUserMapTeamFilter(userType) {
   if (teams.indexOf(selected) !== -1) select.value = selected;
 }
 
-function renderUserMapTeamSummary(userType, list) {
+function renderUserMapTeamSummary(userType, list, summary) {
   var container = document.getElementById(userType === 'ADMIN' ? 'admUserMapTeamSummary' : 'vjUserMapTeamSummary');
   if (!container) return;
-  var counts = Object.create(null);
-  (list || []).forEach(function(item) {
-    var team = mappingText(item.team).trim() || 'ไม่ระบุทีม';
-    counts[team] = (counts[team] || 0) + 1;
-  });
-  var rows = Object.keys(counts).map(function(team) { return { team: team, count: counts[team] }; }).sort(function(a,b) { return b.count - a.count || a.team.localeCompare(b.team); }).slice(0, 8);
+  var rows;
+  if (summary && Array.isArray(summary.byTeam)) {
+    rows = summary.byTeam.map(function(item) { return { team: item.name || 'ไม่ระบุทีม', count: Number(item.users) || 0 }; }).slice(0, 8);
+  } else {
+    var counts = Object.create(null);
+    (list || []).forEach(function(item) {
+      var team = mappingText(item.team).trim() || 'ไม่ระบุทีม';
+      counts[team] = (counts[team] || 0) + 1;
+    });
+    rows = Object.keys(counts).map(function(team) { return { team: team, count: counts[team] }; }).sort(function(a,b) { return b.count - a.count || a.team.localeCompare(b.team); }).slice(0, 8);
+  }
   container.innerHTML = '';
   var title = document.createElement('div');
   title.className = 'text-xs font-bold text-slate-700';
@@ -4370,7 +4548,7 @@ function userMapAggregateBy(list, keyFn) {
   return Object.keys(groups).map(function(key) { return groups[key]; });
 }
 
-function renderUserMapOverview(userType, list) {
+function renderUserMapOverview(userType, list, summary) {
   var prefix = userType === 'ADMIN' ? 'adm' : 'vj';
   var chart = document.getElementById(prefix + 'UserMapActivityChart');
   var insights = document.getElementById(prefix + 'UserMapInsightGrid');
@@ -4378,10 +4556,14 @@ function renderUserMapOverview(userType, list) {
   if (!chart || !insights) return;
 
   var daily = Object.create(null);
-  list.forEach(function(item) {
-    var date = userMapLocalDate(item.updatedDate);
-    if (date) daily[date] = (daily[date] || 0) + 1;
-  });
+  if (summary && Array.isArray(summary.daily)) {
+    summary.daily.forEach(function(item) { if (item && item.date) daily[item.date] = Number(item.count) || 0; });
+  } else {
+    list.forEach(function(item) {
+      var date = userMapLocalDate(item.updatedDate);
+      if (date) daily[date] = (daily[date] || 0) + 1;
+    });
+  }
   var dates = Object.keys(daily).sort().slice(-24);
   chart.replaceChildren();
   if (!dates.length) {
@@ -4399,22 +4581,30 @@ function renderUserMapOverview(userType, list) {
     });
   }
 
-  var uniqueIds = Object.create(null);
-  list.forEach(function(item) { var key = mappingText(item.tiktokId).toLowerCase(); if (key) uniqueIds[key] = item; });
-  var uniqueUsers = Object.keys(uniqueIds).map(function(key) { return uniqueIds[key]; });
-  var byVj = userMapAggregateBy(uniqueUsers, function(item) { return item.assignedVJ; }).sort(function(a,b) { return b.users - a.users || a.name.localeCompare(b.name); });
-  var byTeam = userMapAggregateBy(uniqueUsers, function(item) { return item.team; }).sort(function(a,b) { return b.users - a.users || a.name.localeCompare(b.name); });
-  var topUser = uniqueUsers.slice().sort(function(a,b) { return (Number(b.totalDays)||0) - (Number(a.totalDays)||0) || (Number(b.coinsMonth)||0) - (Number(a.coinsMonth)||0); })[0];
-  var todayCoins = uniqueUsers.reduce(function(total,item) { return total + (Number(item.coinsToday)||0); }, 0);
-  var monthCoins = uniqueUsers.reduce(function(total,item) { return total + (Number(item.coinsMonth)||0); }, 0);
+  var uniqueUsers = [], byVj, byTeam, topUser, todayCoins, monthCoins, uniqueUserCount;
+  if (summary) {
+    byVj = summary.byVj || []; byTeam = summary.byTeam || []; topUser = summary.topUser;
+    todayCoins = Number(summary.todayCoins) || 0; monthCoins = Number(summary.monthCoins) || 0;
+    uniqueUserCount = Number(summary.uniqueUserCount) || 0;
+  } else {
+    var uniqueIds = Object.create(null);
+    list.forEach(function(item) { var key = mappingText(item.tiktokId).toLowerCase(); if (key) uniqueIds[key] = item; });
+    uniqueUsers = Object.keys(uniqueIds).map(function(key) { return uniqueIds[key]; });
+    byVj = userMapAggregateBy(uniqueUsers, function(item) { return item.assignedVJ; }).sort(function(a,b) { return b.users - a.users || a.name.localeCompare(b.name); });
+    byTeam = userMapAggregateBy(uniqueUsers, function(item) { return item.team; }).sort(function(a,b) { return b.users - a.users || a.name.localeCompare(b.name); });
+    topUser = uniqueUsers.slice().sort(function(a,b) { return (Number(b.totalDays)||0) - (Number(a.totalDays)||0) || (Number(b.coinsMonth)||0) - (Number(a.coinsMonth)||0); })[0];
+    todayCoins = uniqueUsers.reduce(function(total,item) { return total + (Number(item.coinsToday)||0); }, 0);
+    monthCoins = uniqueUsers.reduce(function(total,item) { return total + (Number(item.coinsMonth)||0); }, 0);
+    uniqueUserCount = uniqueUsers.length;
+  }
   insights.replaceChildren();
   var definitions = [
     { label:'USER ส่งข้อมูลสะสมมากที่สุด', value:topUser ? (topUser.tiktokId || topUser.userName) : '—', meta:topUser ? (Number(topUser.totalDays)||0).toLocaleString() + ' วัน · ' + (topUser.userName || '') : 'ยังไม่มีข้อมูล', icon:'🏆', style:'--insight-border:#fbcfe8;--insight-bg:#fff1f5;--insight-value:#be185d;--insight-label:#db2777' },
-    { label:'VJ ที่ดูแล USER มากที่สุด', value:byVj[0] ? byVj[0].name : '—', meta:byVj[0] ? byVj[0].users.toLocaleString() + ' Users' : 'ยังไม่มีข้อมูล', icon:'🎯', style:'--insight-border:#c7d2fe;--insight-bg:#eff6ff;--insight-value:#4f46e5;--insight-label:#4f46e5' },
-    { label:'USER ทั้งหมด (ไม่ซ้ำ)', value:uniqueUsers.length.toLocaleString(), meta:'รายการตามตัวกรองปัจจุบัน', icon:'👥', style:'--insight-border:#e2e8f0;--insight-bg:#fff' },
+    { label:'VJ ที่ดูแล USER มากที่สุด', value:byVj[0] ? byVj[0].name : '—', meta:byVj[0] ? Number(byVj[0].users || 0).toLocaleString() + ' Users' : 'ยังไม่มีข้อมูล', icon:'🎯', style:'--insight-border:#c7d2fe;--insight-bg:#eff6ff;--insight-value:#4f46e5;--insight-label:#4f46e5' },
+    { label:'USER ทั้งหมด (ไม่ซ้ำ)', value:uniqueUserCount.toLocaleString(), meta:'รายการตามตัวกรองปัจจุบัน', icon:'👥', style:'--insight-border:#e2e8f0;--insight-bg:#fff' },
     { label:'เหรียญที่ส่งวันนี้', value:todayCoins.toLocaleString(), meta:'รวมจาก User_Mapping', icon:'🪙', style:'--insight-border:#fde68a;--insight-bg:#fffbeb;--insight-value:#b45309;--insight-label:#b45309' },
     { label:'เหรียญสะสมในเดือนนี้', value:monthCoins.toLocaleString(), meta:'รวมจาก User_Mapping', icon:'💰', style:'--insight-border:#a7f3d0;--insight-bg:#ecfdf5;--insight-value:#047857;--insight-label:#059669' },
-    { label:'ทีมที่มี USER มากที่สุด', value:byTeam[0] ? byTeam[0].name : '—', meta:byTeam[0] ? byTeam[0].users.toLocaleString() + ' Users' : 'ยังไม่มีข้อมูล', icon:'👑', style:'--insight-border:#e9d5ff;--insight-bg:#faf5ff;--insight-value:#7e22ce;--insight-label:#9333ea' }
+    { label:'ทีมที่มี USER มากที่สุด', value:byTeam[0] ? byTeam[0].name : '—', meta:byTeam[0] ? Number(byTeam[0].users || 0).toLocaleString() + ' Users' : 'ยังไม่มีข้อมูล', icon:'👑', style:'--insight-border:#e9d5ff;--insight-bg:#faf5ff;--insight-value:#7e22ce;--insight-label:#9333ea' }
   ];
   definitions.forEach(function(definition) {
     var card = document.createElement('article'); card.className = 'ace-um-insight'; card.style.cssText = definition.style;
@@ -4428,11 +4618,13 @@ function renderUserMapOverview(userType, list) {
   });
 }
 
-function renderUserMapVjTeams(userType, list) {
+function renderUserMapVjTeams(userType, list, summary) {
   var prefix = userType === 'ADMIN' ? 'adm' : 'vj';
   var tbody = document.getElementById(prefix + 'UserMapVjTbody');
   if (!tbody) return;
-  var groups = userMapAggregateBy(list, function(item) { return item.assignedVJ; }).sort(function(a,b) { return b.users - a.users || a.name.localeCompare(b.name); });
+  var groups = summary && Array.isArray(summary.byVj)
+    ? summary.byVj
+    : userMapAggregateBy(list, function(item) { return item.assignedVJ; }).sort(function(a,b) { return b.users - a.users || a.name.localeCompare(b.name); });
   tbody.replaceChildren();
   if (!groups.length) {
     var empty = document.createElement('tr'); var cell = document.createElement('td'); cell.colSpan = 7; cell.className = 'p-5 text-center text-slate-400'; cell.textContent = 'ไม่พบข้อมูล VJ / ทีม'; empty.appendChild(cell); tbody.appendChild(empty); return;
@@ -4442,7 +4634,7 @@ function renderUserMapVjTeams(userType, list) {
     createMappingCell(row,'p-3 font-bold text-slate-400',String(index+1));
     createMappingCell(row,'p-3 font-extrabold text-slate-800',group.name);
     var teamCell = createMappingCell(row,'p-3', ''); teamCell.textContent = '';
-    var teamNames = Object.keys(group.teams);
+    var teamNames = Array.isArray(group.teams) ? group.teams : Object.keys(group.teams || {});
     if (teamNames.length) teamNames.forEach(function(team) { var chip=document.createElement('span'); chip.className='ace-um-team-chip mr-1 mb-1'; chip.textContent=team; teamCell.appendChild(chip); });
     else teamCell.textContent='ไม่ระบุทีม';
     createMappingCell(row,'p-3 text-right font-bold text-slate-700',group.users.toLocaleString());
@@ -4455,50 +4647,132 @@ function renderUserMapVjTeams(userType, list) {
 }
 
 function exportUserMapCsv(userType) {
-  var rows = getFilteredUserMapRows(userType);
-  var headers = ['TikTok ID','User Name','VJ','Team','Coins Today','Coins Month','Total Days','Updated Date'];
-  function quote(value) { return '"' + mappingText(value).replace(/"/g,'""') + '"'; }
-  var csv = '\uFEFF' + [headers].concat(rows.map(function(item) { return [item.tiktokId,item.userName,item.assignedVJ,item.team,item.coinsToday,item.coinsMonth,item.totalDays,item.updatedDate]; })).map(function(row) { return row.map(quote).join(','); }).join('\r\n');
-  var blob = new Blob([csv], { type:'text/csv;charset=utf-8' });
-  var url = URL.createObjectURL(blob); var link = document.createElement('a');
-  link.href=url; link.download='ACE_User_Mapping_' + new Date().toISOString().slice(0,10) + '.csv';
-  document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+  var userName = userType === 'ADMIN' ? currentAdminUser : currentSessionVJ;
+  var token = userType === 'ADMIN' ? currentAdminToken : currentSessionToken;
+  var prefix = userType === 'ADMIN' ? 'adm' : 'vj';
+  var search = document.getElementById(prefix + 'SearchUserMap');
+  var team = document.getElementById(prefix + 'UserMapTeamFilter');
+  var from = document.getElementById(prefix + 'UserMapDateFrom');
+  var to = document.getElementById(prefix + 'UserMapDateTo');
+  if (!userName || !token || !hasAppsScriptBridge()) return;
+  showLoading('กำลังเตรียมไฟล์ CSV...');
+  var rows = [];
+  var page = 1;
+  var totalPages = 1;
+  var filters = {
+    reportMode: true, pageSize: 500,
+    query: search && search.value || '', team: team && team.value || '',
+    dateFrom: from && from.value || '', dateTo: to && to.value || ''
+  };
+  function finishExport() {
+    var headers = ['TikTok ID','User Name','VJ','Team','Coins Today','Coins Month','Total Days','Updated Date'];
+    function quote(value) { return '"' + mappingText(value).replace(/"/g,'""') + '"'; }
+    var csv = '\uFEFF' + [headers].concat(rows.map(function(item) { return [item.tiktokId,item.userName,item.assignedVJ,item.team,item.coinsToday,item.coinsMonth,item.totalDays,item.updatedDate]; })).map(function(row) { return row.map(quote).join(','); }).join('\r\n');
+    var blob = new Blob([csv], { type:'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob); var link = document.createElement('a');
+    link.href=url; link.download='ACE_User_Mapping_' + new Date().toISOString().slice(0,10) + '.csv';
+    document.body.appendChild(link); link.click(); link.remove(); window.setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+    hideLoading();
+  }
+  function requestPage() {
+    google.script.run.withSuccessHandler(function(res) {
+      if (!res || !res.success) {
+        hideLoading();
+        showCustomAlert((res && res.message) || 'ส่งออก User Mapping ไม่สำเร็จ', 'เกิดข้อผิดพลาด');
+        return;
+      }
+      rows = rows.concat(res.list || []);
+      totalPages = Number(res.totalPages) || 0;
+      if (page < totalPages) {
+        page++;
+        var overlayText = document.getElementById('loadingText');
+        if (overlayText) overlayText.textContent = 'กำลังรวบรวมข้อมูล CSV ' + Math.min(rows.length, Number(res.totalCount) || rows.length).toLocaleString() + ' / ' + Number(res.totalCount || 0).toLocaleString();
+        requestPage();
+      } else finishExport();
+    }).withFailureHandler(function(error) {
+      hideLoading();
+      showCustomAlert('ส่งออก User Mapping ไม่สำเร็จ: ' + ((error && error.message) || 'กรุณาลองอีกครั้ง'), 'เกิดข้อผิดพลาด');
+    }).getUserMappingData(userName, userType, token, clientIpAddress, 0, Object.assign({}, filters, { page: page }));
+  }
+  requestPage();
 }
 
 function updateUserMapReport(userType) {
   var isAdmin = userType === 'ADMIN';
   var prefix = isAdmin ? 'adm' : 'vj';
-  var filtered = getFilteredUserMapRows(userType);
+  var state = userMapReportState[userType];
+  var userName = isAdmin ? currentAdminUser : currentSessionVJ;
+  var token = isAdmin ? currentAdminToken : currentSessionToken;
+  if (!state || !userName || !token || !hasAppsScriptBridge()) return;
+  var search = document.getElementById(prefix + 'SearchUserMap');
+  var team = document.getElementById(prefix + 'UserMapTeamFilter');
+  var from = document.getElementById(prefix + 'UserMapDateFrom');
+  var to = document.getElementById(prefix + 'UserMapDateTo');
+  var requestId = ++state.requestId;
+  var isFirstLoad = !state.summary;
+  if (isFirstLoad) showLoading('กำลังดึงข้อมูล User Mapping ที่จำเป็น...');
+  var pageText = document.getElementById(prefix + 'UserMapPageText');
+  if (pageText) pageText.textContent = 'กำลังโหลดข้อมูล...';
+  google.script.run.withSuccessHandler(function(res) {
+    if (requestId !== state.requestId) return;
+    if (isFirstLoad) hideLoading();
+    if (!res || !res.success) {
+      if (pageText) pageText.textContent = (res && res.message) || 'โหลดข้อมูลไม่สำเร็จ';
+      return;
+    }
+    var pageRows = Array.isArray(res.list) ? res.list : [];
+    var summary = res.report || {};
+    state.summary = summary;
+    state.availableTeams = res.availableTeams || summary.availableTeams || [];
+    cachedUserMapData = pageRows;
+    userMapCurrentPage[userType] = Number(res.page) || 1;
+    userMapCurrentTotal[userType] = Number(res.totalCount) || 0;
+    if (isAdmin) renderAdminUserMapTable(pageRows); else renderVJUserMapTable(pageRows);
+    loadMappingAvatarCache(pageRows);
+    populateUserMapTeamFilter(userType);
+    populateGiftTeamFilter(userType);
+    updateUserMapCurrentPagination(userType, userMapCurrentTotal[userType]);
+    renderUserMapOverview(userType, pageRows, summary);
+    renderUserMapVjTeams(userType, pageRows, summary);
+    renderUserMapTeamSummary(userType, pageRows, summary);
+    var setMetric = function(id, value) { var node = document.getElementById(id); if (node) node.textContent = Number(value || 0).toLocaleString(); };
+    var vjCount = (summary.byVj || []).length;
+    var teamCount = (summary.byTeam || []).length;
+    if (isAdmin) {
+      setMetric('admUmMetricUsers', summary.uniqueUserCount);
+      setMetric('admUmMetricVjs', vjCount);
+      setMetric('admUmMetricTeams', teamCount);
+      setMetric('admUmMetricToday', res.todayUpdatedCount);
+    } else {
+      setMetric('vjUmMetricUsers', summary.uniqueUserCount);
+      setMetric('vjUmMetricTeams', teamCount);
+      setMetric('vjUmMetricToday', res.todayUpdatedCount);
+      setMetric('vjUmMetricHistory', cachedUserMapHistory.length);
+    }
+    markUserMapReportLoaded(userType);
+  }).withFailureHandler(function(error) {
+    if (requestId !== state.requestId) return;
+    if (isFirstLoad) hideLoading();
+    if (pageText) pageText.textContent = 'โหลดข้อมูลไม่สำเร็จ: ' + ((error && error.message) || 'กรุณาลองอีกครั้ง');
+    console.error('โหลดรายงาน User Mapping ไม่สำเร็จ:', error);
+  }).getUserMappingData(userName, userType, token, clientIpAddress, 0, {
+    reportMode: true,
+    page: userMapCurrentPage[userType] || 1,
+    pageSize: USER_MAPPING_PAGE_SIZE,
+    query: search && search.value || '',
+    team: team && team.value || '',
+    dateFrom: from && from.value || '',
+    dateTo: to && to.value || ''
+  });
+}
 
-  var pageCount = Math.ceil(filtered.length / USER_MAPPING_PAGE_SIZE);
-  userMapCurrentTotal[userType] = filtered.length;
-  if (!pageCount) userMapCurrentPage[userType] = 1;
-  else userMapCurrentPage[userType] = Math.min(Math.max(1, userMapCurrentPage[userType] || 1), pageCount);
-  var pageStart = (userMapCurrentPage[userType] - 1) * USER_MAPPING_PAGE_SIZE;
-  var pageRows = filtered.slice(pageStart, pageStart + USER_MAPPING_PAGE_SIZE);
-  if (isAdmin) renderAdminUserMapTable(pageRows);
-  else renderVJUserMapTable(pageRows);
-  loadMappingAvatarCache(pageRows);
-  updateUserMapCurrentPagination(userType, filtered.length);
-  renderUserMapOverview(userType, filtered);
-  renderUserMapVjTeams(userType, filtered);
-
-  var teams = new Set(filtered.map(function(item) { return mappingText(item.team).trim(); }).filter(Boolean));
-  var vjs = new Set(filtered.map(function(item) { return mappingText(item.assignedVJ).trim(); }).filter(Boolean));
-  var todayCount = filtered.filter(function(item) { return !!item.isUpdatedToday; }).length;
-  var setMetric = function(id, value) { var node = document.getElementById(id); if (node) node.textContent = Number(value || 0).toLocaleString(); };
-  if (isAdmin) {
-    setMetric('admUmMetricUsers', filtered.length);
-    setMetric('admUmMetricVjs', vjs.size);
-    setMetric('admUmMetricTeams', teams.size);
-    setMetric('admUmMetricToday', todayCount);
-  } else {
-    setMetric('vjUmMetricUsers', filtered.length);
-    setMetric('vjUmMetricTeams', teams.size);
-    setMetric('vjUmMetricToday', todayCount);
-    setMetric('vjUmMetricHistory', cachedUserMapHistory.length);
-  }
-  renderUserMapTeamSummary(userType, filtered);
+function scheduleUserMapReport(userType) {
+  var state = userMapReportState[userType];
+  if (!state) return;
+  if (state.searchTimer) window.clearTimeout(state.searchTimer);
+  userMapCurrentPage[userType] = 1;
+  clearUserMapQuickRange(userType);
+  state.searchTimer = window.setTimeout(function() { updateUserMapReport(userType); }, 250);
 }
 
 function updateUserMapCurrentPagination(userType, filteredCount) {
@@ -4560,11 +4834,19 @@ function clearUserMapQuickRange(userType) {
 
 function loadOlderUserMapHistory(userType) {
   if (userMapHistoryPageLoading || !cachedUserMapHistoryHasMore) return;
+  loadUserMapHistory(userType, cachedUserMapHistoryOffset);
+}
+
+function loadUserMapHistory(userType, offset) {
+  if (userMapHistoryPageLoading) return;
   var isAdmin = userType === 'ADMIN';
   var userName = isAdmin ? currentAdminUser : currentSessionVJ;
   var token = isAdmin ? currentAdminToken : currentSessionToken;
   if (!userName || !token || !hasAppsScriptBridge()) return;
 
+  var state = userMapReportState[userType];
+  var container = document.getElementById(isAdmin ? 'admUserMapHistoryGroups' : 'vjUserMapHistoryGroups');
+  if (container && !state.historyLoaded) container.textContent = 'กำลังโหลดประวัติที่จำเป็น...';
   userMapHistoryPageLoading = true;
   updateUserMapHistoryMoreButton(userType, true);
   requestUserMappingData(userName, userType, token, function(res) {
@@ -4579,8 +4861,9 @@ function loadOlderUserMapHistory(userType) {
         cachedUserMapHistory.push(item);
       }
     });
-    cachedUserMapHistoryOffset = Number(res.historyNextOffset) || cachedUserMapHistoryOffset;
+    cachedUserMapHistoryOffset = Number(res.historyNextOffset) || (Number(offset) || 0) + (res.historyList || []).length;
     cachedUserMapHistoryHasMore = !!res.historyHasMore;
+    state.historyLoaded = true;
     userMapHistoryPageLoading = false;
     if (isAdmin) renderUserMapHistory(cachedUserMapHistory, 'admUserMapHistoryDate', 'admUserMapHistoryGroups');
     else renderUserMapHistory(cachedUserMapHistory, 'vjUserMapHistoryDate', 'vjUserMapHistoryGroups');
@@ -4589,10 +4872,20 @@ function loadOlderUserMapHistory(userType) {
       if (historyMetric) historyMetric.textContent = cachedUserMapHistory.length.toLocaleString();
     }
     updateUserMapHistoryMoreButton(userType);
-  }, cachedUserMapHistoryOffset, function() {
+  }, Number(offset) || 0, function() {
     userMapHistoryPageLoading = false;
     updateUserMapHistoryMoreButton(userType);
-  });
+    if (!state.historyLoaded && container) {
+      container.replaceChildren();
+      var message = document.createElement('p');
+      message.className = 'rounded-xl bg-white px-4 py-4 text-center text-xs text-rose-600';
+      message.textContent = 'โหลดประวัติไม่สำเร็จ';
+      var retry = document.createElement('button');
+      retry.type = 'button'; retry.className = 'mt-2 rounded-lg bg-indigo-50 px-3 py-2 font-semibold text-indigo-700'; retry.textContent = 'ลองโหลดอีกครั้ง';
+      retry.addEventListener('click', function() { loadUserMapHistory(userType, 0); });
+      container.appendChild(message); container.appendChild(retry);
+    }
+  }, { historyOnly: true });
 }
 
 // ------------------------------------------
@@ -4606,19 +4899,16 @@ function loadUserMappingForVJ() {
     showCustomAlert('ไม่พบการเชื่อมต่อ Apps Script กรุณาเปิดระบบผ่านลิงก์ Web App แล้วลองอีกครั้ง', 'เชื่อมต่อระบบไม่ได้');
     return;
   }
-  showLoading('กำลังดึงข้อมูล User Mapping...');
-  requestUserMappingData(currentSessionVJ, 'VJ', currentSessionToken, function(res) {
-    cachedUserMapData = res.list || [];
-    cachedUserMapHistory = res.historyList || [];
-    cachedUserMapHistoryOffset = Number(res.historyNextOffset) || cachedUserMapHistory.length;
-    cachedUserMapHistoryHasMore = !!res.historyHasMore;
-    populateUserMapTeamFilter('VJ');
-    populateGiftTeamFilter('VJ');
-    setUserMapQuickRange('VJ', 'all');
-    markUserMapReportLoaded('VJ');
-    renderUserMapHistory(cachedUserMapHistory, 'vjUserMapHistoryDate', 'vjUserMapHistoryGroups');
-    updateUserMapHistoryMoreButton('VJ');
-  });
+  cachedUserMapData = [];
+  cachedUserMapHistory = [];
+  cachedUserMapHistoryOffset = 0;
+  cachedUserMapHistoryHasMore = false;
+  userMapReportState.VJ.historyLoaded = false;
+  userMapReportState.VJ.requestId++;
+  userMapReportState.VJ.summary = null;
+  userMapReportState.VJ.availableTeams = [];
+  setUserMapQuickRange('VJ', 'all');
+  updateUserMapHistoryMoreButton('VJ');
 }
 
 function mappingText(value) {
@@ -4811,8 +5101,7 @@ function renderVJUserMapTable(list) {
 
 
 function filterVJUserMapTable() {
-  userMapCurrentPage.VJ = 1;
-  updateUserMapReport('VJ');
+  scheduleUserMapReport('VJ');
 }
 
 // ------------------------------------------
@@ -4825,20 +5114,17 @@ function loadUserMappingForAdmin() {
     showCustomAlert('ไม่พบการเชื่อมต่อ Apps Script กรุณาเปิดระบบผ่านลิงก์ Web App แล้วลองอีกครั้ง', 'เชื่อมต่อระบบไม่ได้');
     return;
   }
-  showLoading('กำลังดึงข้อมูล User Mapping ทั้งหมด...');
-  requestUserMappingData(currentAdminUser, 'ADMIN', currentAdminToken, function(res) {
-    cachedUserMapData = res.list || [];
-    cachedUserMapHistory = res.historyList || [];
-    cachedUserMapHistoryOffset = Number(res.historyNextOffset) || cachedUserMapHistory.length;
-    cachedUserMapHistoryHasMore = !!res.historyHasMore;
-    populateUserMapTeamFilter('ADMIN');
-    populateGiftTeamFilter('ADMIN');
-    setUserMapQuickRange('ADMIN', 'all');
-    markUserMapReportLoaded('ADMIN');
-    renderUserMapHistory(cachedUserMapHistory, 'admUserMapHistoryDate', 'admUserMapHistoryGroups');
-    populateUserMapVJDropdown();
-    updateUserMapHistoryMoreButton('ADMIN');
-  });
+  cachedUserMapData = [];
+  cachedUserMapHistory = [];
+  cachedUserMapHistoryOffset = 0;
+  cachedUserMapHistoryHasMore = false;
+  userMapReportState.ADMIN.historyLoaded = false;
+  userMapReportState.ADMIN.requestId++;
+  userMapReportState.ADMIN.summary = null;
+  userMapReportState.ADMIN.availableTeams = [];
+  populateUserMapVJDropdown();
+  setUserMapQuickRange('ADMIN', 'all');
+  updateUserMapHistoryMoreButton('ADMIN');
 }
 
 // ------------------------------------------
@@ -4886,8 +5172,7 @@ function renderAdminUserMapTable(list) {
 }
 
 function filterAdminUserMapTable() {
-  userMapCurrentPage.ADMIN = 1;
-  updateUserMapReport('ADMIN');
+  scheduleUserMapReport('ADMIN');
 }
 
 function populateUserMapVJDropdown() {
@@ -5060,7 +5345,7 @@ function deleteUserMapRow(rowIndex) {
     }
 
     // Searchable dropdowns retain their native select as the source of truth for existing app logic.
-    var aceSearchSelectIds = ['vjLoginSelect','admSelectVJIndividual','lockUserSelect','userMapInputAssignedVJ','attInputVJ','attFilterVJ'];
+    var aceSearchSelectIds = ['vjLoginSelect','admSelectVJIndividual','lockUserSelect','userMapInputAssignedVJ','admPasswordVjSelect','attInputVJ','attFilterVJ'];
     var aceSearchWidgets = {};
     function enhanceAceSearchSelect(select) {
       if (!select || select.dataset.aceSearchEnhanced) return;
@@ -5119,6 +5404,7 @@ function deleteUserMapRow(rowIndex) {
         <input id="userMapVjDetailSearch" type="search" oninput="filterUserMapVjDetail()" placeholder="ค้นหาชื่อหรือ TikTok ID..." class="ml-auto my-2 min-w-36 rounded-lg border border-slate-200 px-3 py-2 text-[11px] outline-none focus:border-violet-300">
       </nav>
       <div id="userMapVjDetailUsersPanel" class="ace-um-detail-body"><div class="overflow-x-auto"><table class="ace-um-detail-table"><thead><tr><th>#</th><th>TikTok ID</th><th>ชื่อผู้ใช้</th><th>ทีม</th><th>เหรียญวันนี้</th><th>เหรียญสะสม</th></tr></thead><tbody id="userMapVjDetailUsersBody"></tbody></table></div></div>
+      <footer id="userMapVjDetailUsersFooter" class="ace-um-detail-footer"><span id="userMapVjDetailUsersPageText" class="text-[10px] text-slate-500"></span><div class="flex gap-2"><button id="userMapVjDetailUsersPrev" type="button" onclick="changeUserMapVjDetailUserPage(-1)" class="rounded-lg border border-slate-200 px-3 py-2 text-[11px] font-semibold">ก่อนหน้า</button><button id="userMapVjDetailUsersNext" type="button" onclick="changeUserMapVjDetailUserPage(1)" class="rounded-lg border border-slate-200 px-3 py-2 text-[11px] font-semibold">ถัดไป</button></div></footer>
       <div id="userMapVjDetailGiftersPanel" class="ace-um-detail-body hidden"><div class="overflow-x-auto"><table class="ace-um-detail-table"><thead><tr><th>#</th><th>TikTok ID</th><th>ผู้ส่ง</th><th class="text-right">รายการ</th><th class="text-right">เหรียญรวม</th></tr></thead><tbody id="userMapVjDetailGiftersBody"></tbody></table></div></div>
       <div id="userMapVjDetailGiftsPanel" class="ace-um-detail-body hidden"><div class="overflow-x-auto"><table class="ace-um-detail-table min-w-[740px]"><thead><tr><th>เวลา</th><th>ผู้ส่ง</th><th>TikTok ID</th><th>ของขวัญ</th><th class="text-right">จำนวน</th><th class="text-right">เหรียญ</th></tr></thead><tbody id="userMapVjDetailGiftsBody"></tbody></table></div></div>
       <footer id="userMapVjDetailFooter" class="ace-um-detail-footer hidden"><span id="userMapVjDetailPageText" class="text-[10px] text-slate-500"></span><div class="flex gap-2"><button type="button" onclick="changeUserMapVjDetailPage(-1)" class="rounded-lg border border-slate-200 px-3 py-2 text-[11px] font-semibold">ก่อนหน้า</button><button type="button" onclick="changeUserMapVjDetailPage(1)" class="rounded-lg border border-slate-200 px-3 py-2 text-[11px] font-semibold">ถัดไป</button></div></footer>

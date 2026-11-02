@@ -61,7 +61,8 @@ function createHarness(liveRows, historyRows) {
       ? { userName: 'Admin', userType: 'ADMIN' }
       : { userName: 'Kim', userType: 'VJ' }
   });
-  context.getUserMappingDatabase_ = () => ({});
+  const database = { getSheetByName: name => name === 'User_Mapping' ? liveSheet : (name === 'User_Mapping_History' ? historySheet : null) };
+  context.getUserMappingDatabase_ = () => database;
   context.getOrCreateUserMappingSheet_ = () => liveSheet;
   context.getOrCreateUserMappingHistorySheet_ = () => historySheet;
   context.userMappingSnapshotDate_ = () => TODAY;
@@ -73,6 +74,7 @@ function createHarness(liveRows, historyRows) {
   return {
     context,
     rangeSpecs,
+    properties,
     get archiveCallCount() { return archiveCallCount; }
   };
 }
@@ -151,11 +153,123 @@ test('daily snapshot fallback is attempted at most once for the same day', () =>
   assert.equal(harness.archiveCallCount, 1);
 });
 
+test('daily snapshot lookup reads only the current-date tail of the history sheet', () => {
+  const history = [historyHeader];
+  for (let index = 1; index <= 1400; index++) {
+    history.push(['2026-10-29', '@old' + index, 'Old User ' + index, '', 'Kim', 'Team A', 0, 0, '2026-10-29', 'Admin', 1]);
+  }
+  for (let index = 1; index <= 10; index++) {
+    history.push([TODAY, '@today' + index, 'Today User ' + index, '', 'Kim', 'Team A', 0, 0, TODAY, 'Admin', 1]);
+  }
+  const harness = createHarness([liveHeader], history);
+  const result = harness.context.getUserMappingTodayHistoryRows_(makeSheet(history, 'User_Mapping_History', harness.rangeSpecs), TODAY);
+
+  assert.equal(result.length, 11);
+  assert.equal(result[1][1], '@today10');
+  assert.ok(harness.rangeSpecs[0].rowCount < history.length);
+});
+
+test('User Mapping report returns only the requested 50-row page and computes whole-filter summaries', () => {
+  const live = [liveHeader];
+  for (let index = 1; index <= 125; index++) {
+    live.push(['@user' + index, 'User ' + index, '', index % 2 ? 'Kim' : 'Lee', index % 2 ? 'Team A' : 'Team B', index, index * 2, TODAY, 'Admin', index]);
+  }
+  const harness = createHarness(live, [historyHeader]);
+  harness.properties.set('ACE_USER_MAPPING_ARCHIVED_DATE', TODAY);
+  const first = harness.context.getUserMappingData('', 'ADMIN', 'admin-token', '127.0.0.1', 0, { reportMode: true, page: 1, pageSize: 50 });
+  const second = harness.context.getUserMappingData('', 'ADMIN', 'admin-token', '127.0.0.1', 0, { reportMode: true, page: 2, pageSize: 50 });
+
+  assert.equal(first.success, true);
+  assert.equal(first.list.length, 50);
+  assert.equal(first.totalCount, 125);
+  assert.equal(first.totalPages, 3);
+  assert.equal(first.report.uniqueUserCount, 125);
+  assert.equal(first.report.todayCoins, 7875);
+  assert.equal(second.list.length, 50);
+  assert.equal(second.list[0].tiktokId, '@user51');
+  assert.equal(first.historyList.length, 0);
+  assert.equal(first.report.availableTeams.length, 2);
+  assert.ok(harness.rangeSpecs.every(range => range.sheetName === 'User_Mapping' && range.columnCount === 10));
+});
+
+test('historyOnly returns one newest-first 100-row page without scanning the full archive', () => {
+  const history = [historyHeader];
+  for (let index = 1; index <= 1400; index++) {
+    history.push([TODAY, '@user' + index, 'User ' + index, '', 'Kim', 'Team A', index, index, TODAY, 'Admin', index]);
+  }
+  const harness = createHarness([liveHeader], history);
+  harness.properties.set('ACE_USER_MAPPING_ARCHIVED_DATE', TODAY);
+  const result = harness.context.getUserMappingData('Kim', 'VJ', 'vj-token', '127.0.0.1', 0, { historyOnly: true });
+
+  assert.equal(result.success, true);
+  assert.equal(result.list.length, 0);
+  assert.equal(result.historyList.length, 100);
+  assert.equal(result.historyList[0].tiktokId, '@user1400');
+  assert.equal(result.historyHasMore, true);
+  assert.equal(result.historyTotalCount, null);
+  assert.ok(harness.rangeSpecs.some(range => range.sheetName === 'User_Mapping_History' && range.rowCount < history.length));
+});
+
+test('Admin credential reveal requires the authenticated Admin PIN and never logs credentials', () => {
+  const auditEntries = [];
+  const adminRows = [
+    ['Name', 'PIN'],
+    ['Admin', '001234']
+  ];
+  const vjRows = [
+    ['Full Name', 'Stage Name', 'Team', 'Role', 'x', 'Shift', 'x', 'TikTok ID', 'Password'],
+    ['Kim Full', 'Kim', 'Team A', 'VJ', '', '', '', '@kim', '9876'],
+    ['Lee Full', 'Lee', 'Team B', 'VJ', '', '', '', '@lee', '1111']
+  ];
+  function sheet(rows) {
+    return {
+      getDataRange: () => ({ getDisplayValues: () => rows }),
+      getLastRow: () => rows.length,
+      getLastColumn: () => rows[0].length,
+      getRange: (row, column, rowCount, columnCount) => ({
+        getDisplayValues: () => rows.slice(row - 1, row - 1 + rowCount).map(values => values.slice(column - 1, column - 1 + columnCount))
+      })
+    };
+  }
+  const context = {
+    console,
+    Logger: { log: value => auditEntries.push(String(value)) },
+    SpreadsheetApp: { getActiveSpreadsheet: () => ({ getSheetByName: name => name === 'Admins' ? sheet(adminRows) : (name === 'vj mc all' ? sheet(vjRows) : null) }) }
+  };
+  vm.createContext(context);
+  vm.runInContext(backendSource, context, { filename: 'code.gs', timeout: 2000 });
+  context.requireSession_ = () => ({ success: true, session: { userName: 'Admin', userType: 'ADMIN' } });
+  context.isLoginRateLimited_ = () => false;
+  context.recordLoginFailure_ = () => {};
+  context.clearLoginFailures_ = () => {};
+  context.writeLog_ = (...args) => auditEntries.push(args.join('|'));
+
+  const denied = context.getVjPasswordForAdmin('Kim', 'bad-pin', 'admin-token', '127.0.0.1', 'test');
+  const allowed = context.getVjPasswordForAdmin('Kim', '001234', 'admin-token', '127.0.0.1', 'test');
+  assert.equal(denied.success, false);
+  assert.equal(Object.hasOwn(denied, 'password'), false);
+  assert.equal(allowed.success, true);
+  assert.equal(allowed.vjName, 'Kim');
+  assert.equal(allowed.password, '9876');
+  assert.equal(auditEntries.join('\n').includes('001234'), false);
+  assert.equal(auditEntries.join('\n').includes('9876'), false);
+});
+
 test('frontend includes transient retry, bridge guard, and history continuation control', () => {
   assert.ok(/HTTP\s*-1/.test(frontendSource));
   assert.ok(frontendSource.includes('if (!hasAppsScriptBridge())'));
   assert.ok(frontendSource.includes("loadOlderUserMapHistory('VJ')"));
   assert.ok(frontendSource.includes("loadOlderUserMapHistory('ADMIN')"));
+});
+
+test('frontend pages User Mapping on the server and requests Admin password only after re-authentication', () => {
+  assert.ok(frontendSource.includes("reportMode: true"));
+  assert.ok(frontendSource.includes('pageSize: USER_MAPPING_PAGE_SIZE'));
+  assert.ok(frontendSource.includes("{ historyOnly: true }"));
+  assert.ok(frontendSource.includes(".getUserMappingData(userName, state.userType, token, clientIpAddress, 0"));
+  assert.ok(frontendSource.includes('.getVjPasswordForAdmin(stageName, adminPin, currentAdminToken'));
+  assert.match(frontendSource, /setTimeout\(function\(\)\s*\{\s*clearAdminPasswordReveal\(\);/);
+  assert.ok(frontendSource.includes('type="password" autocomplete="current-password"'));
 });
 
 test('inline frontend JavaScript parses without syntax errors', () => {
