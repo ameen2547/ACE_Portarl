@@ -210,17 +210,21 @@ test('historyOnly returns one newest-first 100-row page without scanning the ful
   assert.ok(harness.rangeSpecs.some(range => range.sheetName === 'User_Mapping_History' && range.rowCount < history.length));
 });
 
-test('Admin credential reveal requires the authenticated Admin PIN and never logs credentials', () => {
+test('Super Admin password lookup is role-gated, disambiguates accounts, audits safely, and never returns hashes', () => {
   const auditEntries = [];
   const adminRows = [
-    ['Name', 'PIN'],
-    ['Admin', '001234']
+    ['Name', 'PIN', 'Role'],
+    ['Admin', '001234', 'SUPER_ADMIN'],
+    ['Staff', '009999', 'ADMIN']
   ];
+  const hashValue = '$2b$12$fake-hash-value-that-must-never-be-returned';
   const vjRows = [
     ['Full Name', 'Stage Name', 'Team', 'Role', 'x', 'Shift', 'x', 'TikTok ID', 'Password'],
-    ['Kim Full', 'Kim', 'Team A', 'VJ', '', '', '', '@kim', '9876'],
-    ['Lee Full', 'Lee', 'Team B', 'VJ', '', '', '', '@lee', '1111']
+    ['Kim One', 'Kim', 'Team A', 'VJ', '', '', '', '@kim.one', '9876'],
+    ['Kim Two', 'Kim', 'Team B', 'MC', '', '', '', '@kim.two', '2222'],
+    ['Hash User', 'Hashed', 'Team A', 'HR', '', '', '', '@hashed', hashValue]
   ];
+  const logRows = [['Timestamp', 'User Type', 'User Name', 'Action', 'Details', 'IP Address', 'Device Info', 'Month_Year']];
   function sheet(rows) {
     return {
       getDataRange: () => ({ getDisplayValues: () => rows }),
@@ -231,28 +235,74 @@ test('Admin credential reveal requires the authenticated Admin PIN and never log
       })
     };
   }
+  const sheets = { Admins: sheet(adminRows), 'vj mc all': sheet(vjRows), Logs: sheet(logRows) };
   const context = {
     console,
     Logger: { log: value => auditEntries.push(String(value)) },
-    SpreadsheetApp: { getActiveSpreadsheet: () => ({ getSheetByName: name => name === 'Admins' ? sheet(adminRows) : (name === 'vj mc all' ? sheet(vjRows) : null) }) }
+    SpreadsheetApp: { getActiveSpreadsheet: () => ({ getSheetByName: name => sheets[name] || null }) }
   };
   vm.createContext(context);
   vm.runInContext(backendSource, context, { filename: 'code.gs', timeout: 2000 });
-  context.requireSession_ = () => ({ success: true, session: { userName: 'Admin', userType: 'ADMIN' } });
+  context.requireSession_ = token => ({ success: true, session: { userName: token === 'staff-token' ? 'Staff' : 'Admin', userType: 'ADMIN' } });
   context.isLoginRateLimited_ = () => false;
   context.recordLoginFailure_ = () => {};
   context.clearLoginFailures_ = () => {};
-  context.writeLog_ = (...args) => auditEntries.push(args.join('|'));
+  context.writeLog_ = (...args) => auditEntries.push(args);
 
-  const denied = context.getVjPasswordForAdmin('Kim', 'bad-pin', 'admin-token', '127.0.0.1', 'test');
-  const allowed = context.getVjPasswordForAdmin('Kim', '001234', 'admin-token', '127.0.0.1', 'test');
-  assert.equal(denied.success, false);
-  assert.equal(Object.hasOwn(denied, 'password'), false);
+  const accountPage = context.getPasswordAccountPage('', 'ALL', 1, 50, 'admin-token', '127.0.0.1');
+  assert.equal(accountPage.success, true);
+  assert.equal(accountPage.total, 3);
+  assert.equal(accountPage.accounts[2].credentialStatus, 'HASHED');
+  assert.equal(JSON.stringify(accountPage).includes('9876'), false);
+  assert.equal(JSON.stringify(accountPage).includes(hashValue), false);
+
+  const duplicateKim = accountPage.accounts.find(account => account.username === '@kim.two');
+  const badPin = context.getVjPasswordForAdmin(duplicateKim, 'bad-pin', 'admin-token', '127.0.0.1', 'test');
+  assert.equal(badPin.success, false);
+  assert.equal(Object.hasOwn(badPin, 'password'), false);
+  const wrongIdentity = context.getVjPasswordForAdmin({ ...duplicateKim, team: 'Team A' }, '001234', 'admin-token', '127.0.0.1', 'test');
+  assert.equal(wrongIdentity.success, false);
+
+  const staffPage = context.getPasswordAccountPage('', 'ALL', 1, 50, 'staff-token', '127.0.0.1');
+  const staffReveal = context.getVjPasswordForAdmin(duplicateKim, '009999', 'staff-token', '127.0.0.1', 'test');
+  assert.equal(staffPage.success, false);
+  assert.equal(staffReveal.success, false);
+  assert.equal(Object.hasOwn(staffReveal, 'password'), false);
+
+  const allowed = context.getVjPasswordForAdmin(duplicateKim, '001234', 'admin-token', '127.0.0.1', 'test');
   assert.equal(allowed.success, true);
-  assert.equal(allowed.vjName, 'Kim');
-  assert.equal(allowed.password, '9876');
-  assert.equal(auditEntries.join('\n').includes('001234'), false);
-  assert.equal(auditEntries.join('\n').includes('9876'), false);
+  assert.equal(allowed.stageName, 'Kim');
+  assert.equal(allowed.username, '@kim.two');
+  assert.equal(allowed.team, 'Team B');
+  assert.equal(allowed.role, 'MC');
+  assert.equal(allowed.password, '2222');
+  const hashed = context.getVjPasswordForAdmin(accountPage.accounts[2], '001234', 'admin-token', '127.0.0.1', 'test');
+  assert.equal(hashed.success, false);
+  assert.match(hashed.message, /hash/);
+  assert.equal(JSON.stringify(hashed).includes(hashValue), false);
+
+  const realLogRows = auditEntries.filter(Array.isArray).map((entry, index) => [
+    '2026-11-02 12:00:' + String(index).padStart(2, '0'), entry[0], entry[1], entry[2], entry[3], entry[4] || '-', entry[5] || '-', 'NOVEMBER 2026'
+  ]);
+  sheets.Logs = sheet([logRows[0], ...realLogRows]);
+  const history = context.getPasswordAuditHistory({ query: '@kim.two', team: 'Team B', role: 'MC', activity: 'VIEWED' }, 1, 50, 'admin-token', '127.0.0.1');
+  assert.equal(history.success, true);
+  assert.equal(history.total, 1);
+  assert.equal(history.records[0].stageName, 'Kim');
+  assert.equal(history.records[0].username, '@kim.two');
+  assert.equal(JSON.stringify(history).includes('2222'), false);
+  assert.equal(context.isStoredPasswordHash_('$pbkdf2-sha256$600000$salt$digest', false), true);
+  assert.equal(context.isStoredPasswordHash_('pbkdf2_sha256$600000$salt$digest', false), true);
+
+  adminRows.push(['Admin', '008888', 'ADMIN']);
+  assert.equal(context.getAdminSecurityContext_('Admin').role, 'ADMIN', 'duplicate Admin names must fail closed');
+  assert.equal(context.getPasswordAccountPage('', 'ALL', 1, 50, 'admin-token', '127.0.0.1').success, false);
+  assert.equal(context.getVjPasswordForAdmin(duplicateKim, '001234', 'admin-token', '127.0.0.1', 'test').success, false);
+  const allLogs = JSON.stringify(auditEntries);
+  assert.equal(allLogs.includes('001234'), false);
+  assert.equal(allLogs.includes('009999'), false);
+  assert.equal(allLogs.includes('2222'), false);
+  assert.equal(allLogs.includes(hashValue), false);
 });
 
 test('frontend includes transient retry, bridge guard, and history continuation control', () => {
@@ -262,14 +312,96 @@ test('frontend includes transient retry, bridge guard, and history continuation 
   assert.ok(frontendSource.includes("loadOlderUserMapHistory('ADMIN')"));
 });
 
-test('frontend pages User Mapping on the server and requests Admin password only after re-authentication', () => {
+test('frontend pages User Mapping and requests one selected account only after Super Admin re-authentication', () => {
   assert.ok(frontendSource.includes("reportMode: true"));
   assert.ok(frontendSource.includes('pageSize: USER_MAPPING_PAGE_SIZE'));
   assert.ok(frontendSource.includes("{ historyOnly: true }"));
   assert.ok(frontendSource.includes(".getUserMappingData(userName, state.userType, token, clientIpAddress, 0"));
-  assert.ok(frontendSource.includes('.getVjPasswordForAdmin(stageName, adminPin, currentAdminToken'));
+  assert.ok(frontendSource.includes('.getVjPasswordForAdmin(selected, adminPin, currentAdminToken'));
+  assert.ok(frontendSource.includes('.getPasswordAccountPage('));
+  assert.ok(frontendSource.includes('.getPasswordAuditHistory('));
   assert.match(frontendSource, /setTimeout\(function\(\)\s*\{\s*clearAdminPasswordReveal\(\);/);
+  assert.ok(frontendSource.includes('}, 15000);'));
   assert.ok(frontendSource.includes('type="password" autocomplete="current-password"'));
+});
+
+test('legacy login still compares the stored password directly and does not force a reset', () => {
+  const login = backendSource.match(/function verifyAndGetPersonalData\([\s\S]*?(?=function getAdminDashboardData)/);
+  assert.ok(login);
+  assert.ok(login[0].includes('storedPin !== targetPass'));
+  assert.equal(/force.{0,20}reset|password.{0,20}reset/i.test(login[0]), false);
+});
+
+test('login accepts the unchanged stored password and rejects a different password', () => {
+  const accounts = [
+    ['Full Name', 'Stage Name', 'Team', 'Role', 'Shift', 'TikTok ID', 'Password'],
+    ['Kim Full', 'Kim', 'Team A', 'MC', '09:00-18:00', '@kim', '0042']
+  ];
+  const logs = [];
+  const context = {
+    console,
+    SpreadsheetApp: { getActiveSpreadsheet: () => ({ getSheetByName: name => name === 'vj mc all' ? {
+      getDataRange: () => ({ getValues: () => accounts })
+    } : null }) }
+  };
+  vm.createContext(context);
+  vm.runInContext(backendSource, context, { filename: 'code.gs', timeout: 2000 });
+  context.isLoginRateLimited_ = () => false;
+  context.checkAccessPermission_ = () => ({ allowed: true });
+  context.recordLoginFailure_ = () => {};
+  context.clearLoginFailures_ = () => {};
+  context.getProfilePicUrl_ = () => '';
+  context.getAllMonthData_ = () => ({ list: [{ vjName: 'Kim', currentDiamond: 100, targetDiamond: 200, team: 'Team A' }] });
+  context.getAttendanceRecords_ = () => ({ success: true, records: [], sourceWarning: '' });
+  context.getActiveAnnouncements_ = () => ({ success: true, list: [] });
+  context.getSystemVersionInfo = () => ({ success: true, version: 'test' });
+  context.issueSession_ = () => 'test-session';
+  context.writeLog_ = (...entry) => logs.push(entry);
+
+  const accepted = context.verifyAndGetPersonalData('Kim', '0042', 'NOVEMBER 2026', '127.0.0.1', 'test-device', '');
+  const rejected = context.verifyAndGetPersonalData('Kim', '0043', 'NOVEMBER 2026', '127.0.0.1', 'test-device', '');
+  assert.equal(accepted.success, true);
+  assert.equal(accepted.sessionToken, 'test-session');
+  assert.equal(rejected.success, false);
+  assert.equal(JSON.stringify(logs).includes('0042'), false);
+});
+
+test('table group builder groups by team/date and exposes native keyboard-operable controls', () => {
+  const inlineScripts = [...frontendSource.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)].map(match => match[2]);
+  const source = inlineScripts.find(script => script.includes('function buildAccessibleTableGroups'));
+  assert.ok(source);
+  const start = source.indexOf('function buildAccessibleTableGroups');
+  const end = source.indexOf('\n    function applyAccessibleGroupingToBody', start);
+  const groupBuilderSource = source.slice(start, end) + '\nthis.buildAccessibleTableGroups = buildAccessibleTableGroups;';
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(groupBuilderSource, context);
+  const groups = context.buildAccessibleTableGroups(['VJ', 'ทีม', 'ตำแหน่ง'], [['A', 'Team 1', 'VJ'], ['B', 'Team 2', 'MC'], ['C', 'Team 1', 'HR']], 'team');
+  assert.equal(groups.groupColumn, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(groups.groups.map(group => [group.label, group.rowIndexes.length]))), [['Team 1', 2], ['Team 2', 1]]);
+  const byDate = context.buildAccessibleTableGroups(['วัน / เวลา', 'VJ'], [['2026-11-01 09:00', 'A'], ['2026-11-01 15:30', 'B'], ['2026-11-02 09:00', 'C']], 'date');
+  assert.deepEqual(JSON.parse(JSON.stringify(byDate.groups.map(group => [group.label, group.rowIndexes.length]))), [['2026-11-01', 2], ['2026-11-02', 1]]);
+  const byTimeColumn = context.buildAccessibleTableGroups(['เวลา', 'ผู้ส่ง'], [['2026-11-01 09:00', 'A'], ['2026-11-01 15:30', 'B']], 'date');
+  assert.deepEqual(JSON.parse(JSON.stringify(byTimeColumn.groups.map(group => [group.label, group.rowIndexes.length]))), [['2026-11-01', 2]]);
+  const byRank = context.buildAccessibleTableGroups(['#', 'ผู้ส่ง'], [['1', 'A'], ['12', 'B']], 'rank');
+  assert.deepEqual(JSON.parse(JSON.stringify(byRank.groups.map(group => [group.label, group.rowIndexes.length]))), [['1–10 อันดับ', 1], ['11–20 อันดับ', 1]]);
+  assert.ok(frontendSource.includes("toggle.type = 'button'"));
+  assert.ok(frontendSource.includes("toggle.setAttribute('aria-expanded'"));
+  assert.ok(frontendSource.includes('rows[index].hidden = !expanded'));
+  assert.ok(frontendSource.includes('aceGroupingModes'));
+});
+
+test('sidebar categories collapse to an icon rail on desktop and remain dismissible on mobile', () => {
+  assert.match(frontendSource, /body\.ace-shell\.ace-sidebar-collapsed \{ padding-left:\s*78px/);
+  assert.ok(frontendSource.includes("localStorage.setItem('ace_sidebar_collapsed'"));
+  assert.ok(frontendSource.includes("matchMedia('(max-width: 767px)')"));
+  assert.ok(frontendSource.includes("side.classList.toggle('open', open)"));
+  assert.ok(frontendSource.includes("backdrop.classList.toggle('open', open)"));
+  assert.ok(frontendSource.includes("event.key==='Escape'"));
+  assert.ok(frontendSource.includes("{ title:'ภาพรวม'"));
+  assert.ok(frontendSource.includes("{ title:'จัดการข้อมูล'"));
+  assert.ok(frontendSource.includes("toggle.setAttribute('aria-label', collapsed ? 'ขยายเมนู' : 'ย่อเมนู')"));
+  assert.ok(frontendSource.includes('ace-mobile-user-nav'));
 });
 
 test('inline frontend JavaScript parses without syntax errors', () => {
@@ -298,6 +430,10 @@ test('both User Mapping views provide report filters, summary cards, and history
   assert.ok(frontendSource.includes('function renderUserMapOverview'));
   assert.ok(frontendSource.includes('function renderUserMapVjTeams'));
   assert.ok(frontendSource.includes('function openUserMapVjDetail'));
+  assert.ok(frontendSource.includes('.ace-um-detail-search { width:min(280px,35%)'));
+  assert.ok(frontendSource.includes('function renderUserMapVjDetailIdentity(vjTikTokId)'));
+  assert.ok(frontendSource.includes("loadMappingAvatarCache([{ vjTikTokId:state.vjTikTokId }])"));
+  assert.ok(frontendSource.includes('.ace-um-detail-tabs-list { width:100%; gap:.85rem; }'));
   assert.ok(frontendSource.includes('var USER_MAPPING_PAGE_SIZE = 50;'));
   assert.ok(frontendSource.includes('id="vjUserMapPageText"'));
   assert.ok(frontendSource.includes('id="admUserMapPageText"'));
@@ -457,45 +593,25 @@ test('Gift_Details report pages rows and keeps whole-filter totals', () => {
   assert.equal(Object.hasOwn(firstPage.list[0], 'sourceRow'), false);
 });
 
-test('Gift_Details report resolves gift art by name, validates CDN host, and caches the lookup', () => {
+test('Gift_Details column H gift name builds a direct BeetGames image URL', () => {
   const gifts = [
     giftHeader,
     ['r1', '2026-10-31 10:00:00', 'R1', 'Kim', 'Gifter A', '@giver-a', 'Bound', 'Rose', 1, 1, 1, 'c1', 'uploader'],
-    ['r2', '2026-10-31 11:00:00', 'R1', 'Kim', 'Gifter B', '@giver-b', 'Bound', 'Unsafe Gift', 1, 1, 1, 'c2', 'uploader'],
-    ['r3', '2026-10-31 12:00:00', 'R1', 'Kim', 'Gifter C', '@giver-c', 'Bound', 'Path Escape', 1, 1, 1, 'c3', 'uploader']
+    ['r2', '2026-10-31 11:00:00', 'R1', 'Kim', 'Gifter B', '@giver-b', 'Bound', 'Cow-napping', 1, 1, 1, 'c2', 'uploader'],
+    ['r3', '2026-10-31 12:00:00', 'R1', 'Kim', 'Gifter C', '@giver-c', 'Bound', '10/10', 1, 1, 1, 'c3', 'uploader']
   ];
   const harness = createGiftReportHarness(gifts, [liveHeader], 'ADMIN', 'Admin');
-  const cacheValues = new Map();
   let fetchCount = 0;
-  harness.context.CacheService = {
-    getScriptCache: () => ({
-      get: key => cacheValues.get(key) || null,
-      put: (key, value) => cacheValues.set(key, value)
-    })
-  };
-  harness.context.UrlFetchApp = {
-    fetch: () => {
-      fetchCount++;
-      return {
-        getResponseCode: () => 200,
-        getContentText: () => JSON.stringify({ gifts: [
-          { name: 'Rose', image_url: '/images/gifts/rose.webp' },
-          { name: 'Unsafe Gift', image_url: 'https://images.attacker.example/unsafe.png' },
-          { name: 'Path Escape', image_url: '/images/gifts/../../private.png' }
-        ] })
-      };
-    }
-  };
+  harness.context.UrlFetchApp = { fetch: () => { fetchCount++; throw new Error('direct URL generation must not fetch the catalog'); } };
 
   const first = harness.context.getGiftDetailsData('admin-token', '127.0.0.1', {});
-  const second = harness.context.getGiftDetailsData('admin-token', '127.0.0.1', {});
   const byName = Object.fromEntries(Array.from(first.list, item => [item.giftName, item.giftImageUrl]));
 
   assert.equal(byName.Rose, 'https://beetgames.com/images/gifts/rose.webp');
-  assert.equal(byName['Unsafe Gift'], '');
-  assert.equal(byName['Path Escape'], '');
-  assert.equal(second.list.find(item => item.giftName === 'Rose').giftImageUrl, byName.Rose);
-  assert.equal(fetchCount, 1);
+  assert.equal(byName['Cow-napping'], 'https://beetgames.com/images/gifts/cow_napping.webp');
+  assert.equal(byName['10/10'], 'https://beetgames.com/images/gifts/10_10.webp');
+  assert.equal(fetchCount, 0);
+  assert.ok(backendSource.includes("giftName: giftDetailsColumn_(headers, ['Gift Name', 'GiftName', 'Gift'], 6)"), 'Gift Name resolves to column H within the B:K read range');
 });
 
 test('both User Mapping views expose Gift_Details report tabs and filtered pages', () => {
@@ -515,6 +631,14 @@ test('both User Mapping views expose Gift_Details report tabs and filtered pages
   assert.ok(!frontendSource.includes('loadMappingAvatarCache(cachedUserMapData)'));
   assert.ok(frontendSource.includes('cachedMappingAvatarLookups[lookupKey]'));
   assert.ok(frontendSource.includes('pendingMappingAvatarLookups[lookupKey]'));
-  assert.ok(backendSource.includes("https://beetgames.com/tiktok-gifts.json"));
+  assert.ok(backendSource.includes('function giftImageUrlFromName_(giftName)'));
   assert.ok(frontendSource.includes('beetgames\\.com\\/images\\/gifts'));
+});
+
+test('gift images load lazily with a fallback in both report and VJ gift detail tables', () => {
+  assert.ok(frontendSource.includes("image.loading = 'lazy'"));
+  assert.ok(frontendSource.includes("image.decoding = 'async'"));
+  assert.ok(frontendSource.includes("image.onerror = function() { if (image.parentNode) image.parentNode.replaceChild(placeholder, image); }"));
+  assert.match(frontendSource, /function renderUserMapVjDetailGifts\(result\)[\s\S]*?giftReportGiftCell\(row,item\)/);
+  assert.ok(backendSource.includes('item.giftImageUrl = giftImageUrlFromName_(item.giftName)'));
 });
